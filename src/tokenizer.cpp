@@ -2,6 +2,7 @@
 #include "tokenizers_cpp/unicode_backend.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <cstddef>
@@ -165,9 +166,17 @@ struct BertNormalizerConfig {
 };
 
 struct WordPieceConfig {
+  struct TrieNode {
+    std::optional<std::uint32_t> token_id;
+    HashMap<unsigned char, std::size_t> children;
+  };
+
   std::string unk_token = "[UNK]";
   std::string continuing_subword_prefix = "##";
   std::uint32_t max_input_chars_per_word = 100;
+  std::optional<std::uint32_t> unk_id;
+  std::vector<TrieNode> initial_trie;
+  std::vector<TrieNode> continuation_trie;
 };
 
 struct WordPieceDecoderConfig {
@@ -263,16 +272,19 @@ struct PaddingConfig {
 
 struct WordLevelConfig {
   std::string unk_token = "<unk>";
+  std::optional<std::uint32_t> unk_id;
 };
 
 struct BpeConfig {
   std::optional<std::string> unk_token;
+  std::optional<std::uint32_t> unk_id;
   std::optional<std::string> continuing_subword_prefix;
   std::optional<std::string> end_of_word_suffix;
   std::optional<double> dropout;
   bool fuse_unk = false;
   bool byte_fallback = false;
   bool ignore_merges = false;
+  std::array<std::optional<std::uint32_t>, 256> byte_fallback_ids{};
 };
 
 struct UnigramConfig {
@@ -286,6 +298,7 @@ struct UnigramConfig {
   bool fuse_unk = true;
   std::vector<double> scores;
   std::vector<TrieNode> trie;
+  std::array<std::optional<std::uint32_t>, 256> byte_fallback_ids{};
   double min_score = 0.0;
 };
 
@@ -425,7 +438,15 @@ std::uint64_t allocate_private_cache_id() {
 std::size_t next_codepoint(std::string_view text, std::size_t pos);
 
 template <typename Output, typename EncodeOne>
-std::vector<Output> map_batch_ordered(std::size_t size, EncodeOne encode_one) {
+std::vector<Output> map_batch_ordered(
+    std::size_t size,
+    std::size_t work_units,
+    EncodeOne encode_one) {
+  static constexpr std::size_t kParallelMinItems = 8;
+  static constexpr std::size_t kParallelMinWorkUnits = 8192;
+  static constexpr std::size_t kParallelItemsPerThread = 8;
+  static constexpr std::size_t kParallelWorkUnitsPerThread = 4096;
+
   std::vector<Output> outputs(size);
   if (size == 0) {
     return outputs;
@@ -433,8 +454,18 @@ std::vector<Output> map_batch_ordered(std::size_t size, EncodeOne encode_one) {
 
   const auto hardware_threads =
       static_cast<std::size_t>(std::max(1U, std::thread::hardware_concurrency()));
-  const auto worker_count = std::min(size, hardware_threads);
-  if (worker_count <= 1 || size < 2) {
+  const auto item_limited_threads =
+      std::max<std::size_t>(1, size / kParallelItemsPerThread);
+  const auto work_limited_threads = std::max<std::size_t>(
+      1,
+      work_units / kParallelWorkUnitsPerThread);
+  const auto worker_count =
+      std::min(
+          {size,
+           hardware_threads,
+           std::max(item_limited_threads, work_limited_threads)});
+  if (worker_count <= 1 ||
+      (size < kParallelMinItems && work_units < kParallelMinWorkUnits)) {
     for (std::size_t index = 0; index < size; ++index) {
       outputs[index] = encode_one(index);
     }
@@ -458,6 +489,51 @@ std::vector<Output> map_batch_ordered(std::size_t size, EncodeOne encode_one) {
     future.get();
   }
   return outputs;
+}
+
+std::size_t total_text_bytes(const std::vector<std::string> & texts) {
+  std::size_t total = 0;
+  for (const auto & text : texts) {
+    total += text.size();
+  }
+  return total;
+}
+
+std::size_t total_text_bytes(
+    const std::vector<std::vector<std::string>> & pre_tokenized_texts) {
+  std::size_t total = 0;
+  for (const auto & words : pre_tokenized_texts) {
+    total += total_text_bytes(words);
+  }
+  return total;
+}
+
+std::size_t total_pair_text_bytes(
+    const std::vector<std::pair<std::string, std::string>> & pairs) {
+  std::size_t total = 0;
+  for (const auto & pair : pairs) {
+    total += pair.first.size() + pair.second.size();
+  }
+  return total;
+}
+
+std::size_t total_pair_text_bytes(
+    const std::vector<
+        std::pair<std::vector<std::string>, std::vector<std::string>>> & pairs) {
+  std::size_t total = 0;
+  for (const auto & pair : pairs) {
+    total += total_text_bytes(pair.first) + total_text_bytes(pair.second);
+  }
+  return total;
+}
+
+std::size_t total_id_count(
+    const std::vector<std::vector<std::uint32_t>> & sequences) {
+  std::size_t total = 0;
+  for (const auto & sequence : sequences) {
+    total += sequence.size();
+  }
+  return total * sizeof(std::uint32_t);
 }
 
 std::size_t byte_offset_to_char_offset(std::string_view text, std::size_t byte_offset) {
@@ -3068,6 +3144,11 @@ std::uint32_t require_token_id(
     const HashMap<std::string, std::uint32_t> & token_to_id,
     const std::string & token);
 
+std::uint32_t cached_or_required_token_id(
+    const HashMap<std::string, std::uint32_t> & token_to_id,
+    const std::string & token,
+    const std::optional<std::uint32_t> & cached_id);
+
 std::vector<BpeToken> bpe_symbols_to_tokens(
     const ByteLevelPiece & piece,
     const std::vector<std::string> & id_to_token,
@@ -3132,18 +3213,22 @@ std::vector<BpeSymbol> tokenize_bpe_symbols(
       fallback_symbols.reserve(symbol.size());
       bool found_all_fallback_bytes = true;
       for (std::size_t byte_index = 0; byte_index < symbol.size(); ++byte_index) {
-        const auto token =
-            bpe_byte_fallback_token(static_cast<unsigned char>(symbol[byte_index]));
-        const auto byte_found = token_to_id.find(token);
-        if (byte_found == token_to_id.end()) {
-          found_all_fallback_bytes = false;
-          break;
+        const auto byte = static_cast<unsigned char>(symbol[byte_index]);
+        std::optional<std::uint32_t> byte_id = config.byte_fallback_ids[byte];
+        if (!byte_id) {
+          const auto token = bpe_byte_fallback_token(byte);
+          const auto byte_found = token_to_id.find(token);
+          if (byte_found == token_to_id.end()) {
+            found_all_fallback_bytes = false;
+            break;
+          }
+          byte_id = byte_found->second;
         }
         const auto byte_start =
             symbol.size() == end - pos ? pos + byte_index : pos;
         const auto byte_end =
             symbol.size() == end - pos ? byte_start + 1 : end;
-        fallback_symbols.push_back(BpeSymbol{byte_found->second, byte_start, byte_end});
+        fallback_symbols.push_back(BpeSymbol{*byte_id, byte_start, byte_end});
       }
       if (found_all_fallback_bytes) {
         flush_pending_unk(symbols, pending_unk);
@@ -3154,7 +3239,8 @@ std::vector<BpeSymbol> tokenize_bpe_symbols(
     }
 
     if (config.unk_token) {
-      const auto unk_id = require_token_id(token_to_id, *config.unk_token);
+      const auto unk_id =
+          cached_or_required_token_id(token_to_id, *config.unk_token, config.unk_id);
       if (pending_unk && config.fuse_unk) {
         pending_unk->end = end;
       } else {
@@ -3379,15 +3465,54 @@ std::uint32_t require_token_id(
   return found->second;
 }
 
+std::uint32_t cached_or_required_token_id(
+    const HashMap<std::string, std::uint32_t> & token_to_id,
+    const std::string & token,
+    const std::optional<std::uint32_t> & cached_id) {
+  if (cached_id) {
+    return *cached_id;
+  }
+  return require_token_id(token_to_id, token);
+}
+
+std::optional<std::pair<std::uint32_t, std::size_t>> find_wordpiece_trie_match(
+    std::string_view piece,
+    std::size_t start,
+    const std::vector<detail::WordPieceConfig::TrieNode> & trie) {
+  if (trie.empty()) {
+    return std::nullopt;
+  }
+
+  std::size_t node_index = 0;
+  std::optional<std::pair<std::uint32_t, std::size_t>> best;
+  for (std::size_t end = start; end < piece.size(); ++end) {
+    const auto byte = static_cast<unsigned char>(piece[end]);
+    const auto child = trie[node_index].children.find(byte);
+    if (child == trie[node_index].children.end()) {
+      break;
+    }
+    node_index = child->second;
+    if (node_index >= trie.size()) {
+      break;
+    }
+    if (trie[node_index].token_id) {
+      best = std::make_pair(*trie[node_index].token_id, end + 1);
+    }
+  }
+  return best;
+}
+
 std::vector<BpeToken> tokenize_wordpiece_piece(
     std::string_view piece,
+    const std::vector<std::string> & id_to_token,
     const HashMap<std::string, std::uint32_t> & token_to_id,
     const detail::WordPieceConfig & config) {
   if (piece.empty()) {
     return {};
   }
 
-  const auto unk_id = require_token_id(token_to_id, config.unk_token);
+  const auto unk_id =
+      cached_or_required_token_id(token_to_id, config.unk_token, config.unk_id);
   if (count_codepoints(piece) > config.max_input_chars_per_word) {
     return {BpeToken{unk_id, config.unk_token, Offset{0, piece.size()}}};
   }
@@ -3395,6 +3520,19 @@ std::vector<BpeToken> tokenize_wordpiece_piece(
   std::vector<BpeToken> tokens;
   std::size_t start = 0;
   while (start < piece.size()) {
+    const auto & trie =
+        start == 0 ? config.initial_trie : config.continuation_trie;
+    if (const auto matched = find_wordpiece_trie_match(piece, start, trie)) {
+      const auto id = matched->first;
+      const auto end = matched->second;
+      const auto value = id < id_to_token.size()
+          ? id_to_token[id]
+          : std::string(piece.substr(start, end - start));
+      tokens.push_back(BpeToken{id, value, Offset{start, end}});
+      start = end;
+      continue;
+    }
+
     std::size_t end = piece.size();
     std::optional<BpeToken> current;
 
@@ -3431,7 +3569,8 @@ BpeToken tokenize_wordlevel_piece(
     return BpeToken{found->second, std::string(piece), Offset{0, piece.size()}};
   }
 
-  const auto unk_id = require_token_id(token_to_id, config.unk_token);
+  const auto unk_id =
+      cached_or_required_token_id(token_to_id, config.unk_token, config.unk_id);
   return BpeToken{unk_id, config.unk_token, Offset{0, piece.size()}};
 }
 
@@ -3571,15 +3710,26 @@ std::vector<BpeToken> tokenize_unigram_piece_uncached(
       std::vector<BpeToken> fallback_tokens;
       bool found_all_fallback_bytes = true;
       for (const auto byte : value) {
-        const auto fallback_token =
-            bpe_byte_fallback_token(static_cast<unsigned char>(byte));
-        const auto fallback_found = token_to_id.find(fallback_token);
-        if (fallback_found == token_to_id.end()) {
-          found_all_fallback_bytes = false;
-          break;
+        const auto byte_index = static_cast<unsigned char>(byte);
+        std::optional<std::uint32_t> fallback_id =
+            config.byte_fallback_ids[byte_index];
+        if (!fallback_id) {
+          const auto fallback_token = bpe_byte_fallback_token(byte_index);
+          const auto fallback_found = token_to_id.find(fallback_token);
+          if (fallback_found == token_to_id.end()) {
+            found_all_fallback_bytes = false;
+            break;
+          }
+          fallback_id = fallback_found->second;
         }
+        const auto fallback_token = *fallback_id < id_to_token.size()
+            ? id_to_token[*fallback_id]
+            : bpe_byte_fallback_token(byte_index);
         fallback_tokens.push_back(
-            BpeToken{fallback_found->second, fallback_token, Offset{span.start, span.end}});
+            BpeToken{
+                *fallback_id,
+                fallback_token,
+                Offset{span.start, span.end}});
       }
       if (found_all_fallback_bytes) {
         tokens.insert(tokens.end(), fallback_tokens.begin(), fallback_tokens.end());
@@ -4390,8 +4540,11 @@ void encode_input_split(
       const auto word_id = current_word_id(fixed_word_id, next_word_id);
       const auto piece_text =
           std::string_view(normalized.text).substr(piece.start, piece.end - piece.start);
-      const auto tokens =
-          tokenize_wordpiece_piece(piece_text, token_to_id_map, wordpiece);
+      const auto tokens = tokenize_wordpiece_piece(
+          piece_text,
+          id_to_token,
+          token_to_id_map,
+          wordpiece);
       for (const auto & token : tokens) {
         append_encoding_token(
             encoding,
@@ -6178,6 +6331,121 @@ void build_unigram_trie(
   }
 }
 
+void insert_wordpiece_trie_token(
+    std::vector<detail::WordPieceConfig::TrieNode> & trie,
+    std::string_view token,
+    std::uint32_t id) {
+  if (token.empty()) {
+    return;
+  }
+  if (trie.empty()) {
+    trie.push_back(detail::WordPieceConfig::TrieNode{});
+  }
+
+  std::size_t node_index = 0;
+  for (const auto byte_value : token) {
+    const auto byte = static_cast<unsigned char>(byte_value);
+    auto & children = trie[node_index].children;
+    const auto child = children.find(byte);
+    if (child == children.end()) {
+      const auto next_index = trie.size();
+      children.emplace(byte, next_index);
+      trie.push_back(detail::WordPieceConfig::TrieNode{});
+      node_index = next_index;
+    } else {
+      node_index = child->second;
+    }
+  }
+  trie[node_index].token_id = id;
+}
+
+void build_wordpiece_trie(
+    const std::vector<std::string> & id_to_token,
+    detail::WordPieceConfig & config) {
+  config.initial_trie.clear();
+  config.continuation_trie.clear();
+  config.initial_trie.push_back(detail::WordPieceConfig::TrieNode{});
+  config.continuation_trie.push_back(detail::WordPieceConfig::TrieNode{});
+
+  for (std::size_t index = 0; index < id_to_token.size(); ++index) {
+    const auto & token = id_to_token[index];
+    if (token.empty()) {
+      continue;
+    }
+    const auto id = static_cast<std::uint32_t>(index);
+    insert_wordpiece_trie_token(config.initial_trie, token, id);
+
+    if (config.continuing_subword_prefix.empty()) {
+      insert_wordpiece_trie_token(config.continuation_trie, token, id);
+    } else if (
+        starts_with(token, config.continuing_subword_prefix) &&
+        token.size() > config.continuing_subword_prefix.size()) {
+      insert_wordpiece_trie_token(
+          config.continuation_trie,
+          std::string_view(token).substr(config.continuing_subword_prefix.size()),
+          id);
+    }
+  }
+}
+
+template <typename Config>
+void hydrate_byte_fallback_ids(
+    const HashMap<std::string, std::uint32_t> & token_to_id,
+    Config & config) {
+  config.byte_fallback_ids.fill(std::nullopt);
+  for (std::size_t byte = 0; byte < config.byte_fallback_ids.size(); ++byte) {
+    const auto token = bpe_byte_fallback_token(static_cast<unsigned char>(byte));
+    const auto found = token_to_id.find(token);
+    if (found != token_to_id.end()) {
+      config.byte_fallback_ids[byte] = found->second;
+    }
+  }
+}
+
+template <typename Impl>
+void rebuild_model_runtime_caches(Impl & impl) {
+  if (impl.model_type_ == "BPE" && impl.bpe_.unk_token) {
+    const auto found = impl.token_to_id_.find(*impl.bpe_.unk_token);
+    impl.bpe_.unk_id = found == impl.token_to_id_.end()
+        ? std::nullopt
+        : std::optional<std::uint32_t>{found->second};
+  } else {
+    impl.bpe_.unk_id = std::nullopt;
+  }
+  if (impl.model_type_ == "BPE" && impl.bpe_.byte_fallback) {
+    hydrate_byte_fallback_ids(impl.token_to_id_, impl.bpe_);
+  } else {
+    impl.bpe_.byte_fallback_ids.fill(std::nullopt);
+  }
+
+  if (impl.model_type_ == "WordPiece") {
+    const auto wordpiece_unk = impl.token_to_id_.find(impl.wordpiece_.unk_token);
+    impl.wordpiece_.unk_id = wordpiece_unk == impl.token_to_id_.end()
+        ? std::nullopt
+        : std::optional<std::uint32_t>{wordpiece_unk->second};
+    build_wordpiece_trie(impl.id_to_token_, impl.wordpiece_);
+  } else {
+    impl.wordpiece_.unk_id = std::nullopt;
+    impl.wordpiece_.initial_trie.clear();
+    impl.wordpiece_.continuation_trie.clear();
+  }
+
+  if (impl.model_type_ == "WordLevel") {
+    const auto wordlevel_unk = impl.token_to_id_.find(impl.wordlevel_.unk_token);
+    impl.wordlevel_.unk_id = wordlevel_unk == impl.token_to_id_.end()
+        ? std::nullopt
+        : std::optional<std::uint32_t>{wordlevel_unk->second};
+  } else {
+    impl.wordlevel_.unk_id = std::nullopt;
+  }
+
+  if (impl.model_type_ == "Unigram" && impl.unigram_.byte_fallback) {
+    hydrate_byte_fallback_ids(impl.token_to_id_, impl.unigram_);
+  } else {
+    impl.unigram_.byte_fallback_ids.fill(std::nullopt);
+  }
+}
+
 std::string model_type_from_json(const json & model) {
   if (!model.is_object()) {
     throw std::runtime_error("model wrapper must be an object");
@@ -6745,6 +7013,7 @@ Tokenizer Tokenizer::from_file(const std::filesystem::path & path) {
   }
 
   rebuild_token_to_id(tokenizer.impl_->id_to_token_, tokenizer.impl_->token_to_id_);
+  rebuild_model_runtime_caches(*tokenizer.impl_);
   return tokenizer;
 }
 
@@ -6771,6 +7040,7 @@ Tokenizer Tokenizer::from_bpe_files(
       tokenizer.impl_->bpe_,
       merges);
   rebuild_token_to_id(tokenizer.impl_->id_to_token_, tokenizer.impl_->token_to_id_);
+  rebuild_model_runtime_caches(*tokenizer.impl_);
   return tokenizer;
 }
 
@@ -6849,6 +7119,7 @@ std::size_t Tokenizer::add_tokens(const std::vector<AddedToken> & tokens) {
     rebuild_token_to_id(impl_->id_to_token_, impl_->token_to_id_);
     impl_->bpe_cache_id_ = allocate_private_cache_id();
     impl_->unigram_cache_id_ = allocate_private_cache_id();
+    rebuild_model_runtime_caches(*impl_);
     rebuild_added_token_matcher(impl_->added_tokens_, impl_->added_token_matcher_);
   }
   return added;
@@ -7153,6 +7424,7 @@ std::vector<Encoding> Tokenizer::encode_batch(
     bool add_special_tokens) const {
   auto encodings = map_batch_ordered<Encoding>(
       texts.size(),
+      total_text_bytes(texts),
       [this, &texts, add_special_tokens](std::size_t index) {
         return encode_text(texts[index], add_special_tokens, true, false);
       });
@@ -7165,6 +7437,7 @@ std::vector<Encoding> Tokenizer::encode_batch(
     bool add_special_tokens) const {
   auto encodings = map_batch_ordered<Encoding>(
       pre_tokenized_texts.size(),
+      total_text_bytes(pre_tokenized_texts),
       [this, &pre_tokenized_texts, add_special_tokens](std::size_t index) {
         return encode_pre_tokenized_words(
             pre_tokenized_texts[index],
@@ -7181,6 +7454,7 @@ std::vector<Encoding> Tokenizer::encode_batch_char_offsets(
     bool add_special_tokens) const {
   auto encodings = map_batch_ordered<Encoding>(
       texts.size(),
+      total_text_bytes(texts),
       [this, &texts, add_special_tokens](std::size_t index) {
         auto encoding = encode_text(texts[index], add_special_tokens, true, false);
         convert_offsets_to_char_offsets(encoding, texts[index]);
@@ -7195,6 +7469,7 @@ std::vector<Encoding> Tokenizer::encode_batch_char_offsets(
     bool add_special_tokens) const {
   auto encodings = map_batch_ordered<Encoding>(
       pre_tokenized_texts.size(),
+      total_text_bytes(pre_tokenized_texts),
       [this, &pre_tokenized_texts, add_special_tokens](std::size_t index) {
         auto encoding = encode_pre_tokenized_words(
             pre_tokenized_texts[index],
@@ -7215,6 +7490,7 @@ std::vector<Encoding> Tokenizer::encode_batch_pairs(
     bool add_special_tokens) const {
   auto encodings = map_batch_ordered<Encoding>(
       pairs.size(),
+      total_pair_text_bytes(pairs),
       [this, &pairs, add_special_tokens](std::size_t index) {
         const auto & pair = pairs[index];
         return encode_pair_text(
@@ -7233,6 +7509,7 @@ std::vector<Encoding> Tokenizer::encode_batch_pairs(
     bool add_special_tokens) const {
   auto encodings = map_batch_ordered<Encoding>(
       pairs.size(),
+      total_pair_text_bytes(pairs),
       [this, &pairs, add_special_tokens](std::size_t index) {
         const auto & pair = pairs[index];
         return encode_pair_pre_tokenized_words(
@@ -7250,6 +7527,7 @@ std::vector<Encoding> Tokenizer::encode_batch_pairs_char_offsets(
     bool add_special_tokens) const {
   auto encodings = map_batch_ordered<Encoding>(
       pairs.size(),
+      total_pair_text_bytes(pairs),
       [this, &pairs, add_special_tokens](std::size_t index) {
         const auto & pair = pairs[index];
         auto encoding = encode_pair_text(
@@ -7270,6 +7548,7 @@ std::vector<Encoding> Tokenizer::encode_batch_pairs_char_offsets(
     bool add_special_tokens) const {
   auto encodings = map_batch_ordered<Encoding>(
       pairs.size(),
+      total_pair_text_bytes(pairs),
       [this, &pairs, add_special_tokens](std::size_t index) {
         const auto & pair = pairs[index];
         auto encoding = encode_pair_pre_tokenized_words(
@@ -7359,6 +7638,7 @@ std::vector<std::string> Tokenizer::decode_batch(
     bool skip_special_tokens) const {
   return map_batch_ordered<std::string>(
       sequences.size(),
+      total_id_count(sequences),
       [this, &sequences, skip_special_tokens](std::size_t index) {
         return decode(sequences[index], skip_special_tokens);
       });

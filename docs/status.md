@@ -41,6 +41,9 @@ R6 BPE merge heap performance hardening:
 R6 Unigram trie/cache performance hardening:
 `docs/r6-unigram-cache-performance.md`.
 
+R6 hot-path follow-up performance hardening:
+`docs/r6-hot-path-followup-performance.md`.
+
 R6 performance measurement:
 `docs/r6-performance-measurement.md`.
 
@@ -129,10 +132,15 @@ install prefix and remains ignored by this project's `.gitignore`.
   pieces. Best-path inference now walks matching trie prefixes instead of
   scanning the whole vocabulary at each byte position, while final offsets are
   still projected through the current normalized piece.
+- R6 follow-up hot-path hardening keeps small batch encode/decode workloads
+  serial, caches compiled ICU regex objects per thread, builds private
+  WordPiece initial/continuation tries, and caches common unknown/byte-fallback
+  ids after tokenizer load and runtime token mutation.
 - R6 optional benchmark coverage now includes direct added-token legacy/trie
   comparison and a tokenizer-level public-API runtime matrix for
   added-token-heavy encode, repeated short BPE cache behavior, deterministic
-  long-piece BPE heap behavior, Unigram trie/cache behavior, and real
+  long-piece BPE heap behavior, Unigram trie/cache behavior, WordPiece trie
+  behavior, small-batch behavior, and real
   GPT-style, RoBERTa, BERT, ALBERT, and Llama tokenizer JSON cases when local
   HF test data exists. These benchmarks are gated by
   `TOKENIZERS_CPP_BUILD_BENCHMARKS=ON` and are not CTest assertions.

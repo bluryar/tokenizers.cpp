@@ -30,6 +30,10 @@ Benchmarks are not CTest assertions and are not built by default.
   cache cutoff, exercising heap merge selection directly.
 - `unigram_trie_cache_ab`: repeated Unigram pieces through `WhitespaceSplit`,
   exercising trie lookup plus thread-local cache.
+- `wordpiece_trie_repeated`: repeated WordPiece pieces through `Whitespace`,
+  exercising private initial/continuation trie lookup.
+- `wordpiece_small_batch`: small WordPiece batch encode that should stay serial
+  after the batch parallelism threshold.
 
 These cases use self-contained temporary tokenizer JSON files and do not require
 HF test data.
@@ -65,15 +69,17 @@ projects/tokenizers.cpp/build-bench/tokenizers_cpp_added_token_matcher_benchmark
 `tokenizers_cpp_r6_performance_benchmark`:
 
 ```text
-added_tokens_1024                  iterations=100   input_bytes=10496    elapsed_ms=958.140    MiB/s=1.045      enc/s=104.369    checksum=14154630344326105512
-bpe_cache_repeated_hello           iterations=200   input_bytes=12287    elapsed_ms=721.499    MiB/s=3.248      enc/s=277.200    checksum=4800127977224962048
-bpe_heap_long_piece_512            iterations=500   input_bytes=512      elapsed_ms=278.611    MiB/s=0.876      enc/s=1794.614   checksum=3779030594713542080
-unigram_trie_cache_ab              iterations=200   input_bytes=12287    elapsed_ms=817.392    MiB/s=2.867      enc/s=244.681    checksum=4519017675076698112
-real_gpt_sequence_batch            iterations=120   input_bytes=352      elapsed_ms=96.737     MiB/s=0.416      enc/s=1240.482   checksum=6339901532157670672
-real_roberta_pair_batch            iterations=80    input_bytes=408      elapsed_ms=60.058     MiB/s=0.518      enc/s=1332.056   checksum=1852651245518534752
-real_bert_batch_decode             iterations=80    input_bytes=950      elapsed_ms=65.360     MiB/s=1.109      enc/s=1223.988   checksum=4713035283500748992
-real_albert_batch_decode           iterations=80    input_bytes=696      elapsed_ms=85.321     MiB/s=0.622      enc/s=937.641    checksum=4970984985901250128
-real_llama_pair_batch              iterations=60    input_bytes=780      elapsed_ms=51.608     MiB/s=0.865      enc/s=1162.619   checksum=6112667824444849188
+added_tokens_1024                  iterations=100   input_bytes=10496    elapsed_ms=325.926    MiB/s=3.071      enc/s=306.818    checksum=14154630344326105512
+bpe_cache_repeated_hello           iterations=200   input_bytes=12287    elapsed_ms=679.972    MiB/s=3.447      enc/s=294.130    checksum=4800127977224962048
+bpe_heap_long_piece_512            iterations=500   input_bytes=512      elapsed_ms=272.153    MiB/s=0.897      enc/s=1837.203   checksum=3779030594713542080
+unigram_trie_cache_ab              iterations=200   input_bytes=12287    elapsed_ms=803.209    MiB/s=2.918      enc/s=249.001    checksum=4519017675076698112
+wordpiece_trie_repeated            iterations=200   input_bytes=16895    elapsed_ms=731.127    MiB/s=4.408      enc/s=273.550    checksum=11292211218858008576
+wordpiece_small_batch              iterations=1000  input_bytes=68       elapsed_ms=47.324     MiB/s=1.370      enc/s=21130.720  checksum=11722130037619660296
+real_gpt_sequence_batch            iterations=120   input_bytes=352      elapsed_ms=69.223     MiB/s=0.582      enc/s=1733.533   checksum=6339901532157670672
+real_roberta_pair_batch            iterations=80    input_bytes=408      elapsed_ms=42.879     MiB/s=0.726      enc/s=1865.718   checksum=1852651245518534752
+real_bert_batch_decode             iterations=80    input_bytes=950      elapsed_ms=56.583     MiB/s=1.281      enc/s=1413.844   checksum=4713035283500748992
+real_albert_batch_decode           iterations=80    input_bytes=696      elapsed_ms=57.437     MiB/s=0.924      enc/s=1392.828   checksum=4970984985901250128
+real_llama_pair_batch              iterations=60    input_bytes=780      elapsed_ms=49.040     MiB/s=0.910      enc/s=1223.499   checksum=6112667824444849188
 ```
 
 `tokenizers_cpp_added_token_matcher_benchmark`:

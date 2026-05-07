@@ -1,7 +1,10 @@
 #include "tokenizers_cpp/unicode_backend.hpp"
 
 #include <algorithm>
+#include <memory>
 #include <stdexcept>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <unicode/casemap.h>
@@ -138,6 +141,53 @@ const UNormalizer2 * normalizer_for(NormalizationForm form) {
   }
   require_success(status, "unorm2_get*Instance");
   return normalizer;
+}
+
+struct RegexDeleter {
+  void operator()(URegularExpression * regex) const {
+    if (regex != nullptr) {
+      uregex_close(regex);
+    }
+  }
+};
+
+using RegexPtr = std::unique_ptr<URegularExpression, RegexDeleter>;
+
+URegularExpression * cached_regex(std::string_view pattern) {
+  static constexpr std::size_t kMaxCachedRegex = 64;
+  thread_local std::unordered_map<std::string, RegexPtr> cache;
+
+  const auto key = std::string(pattern);
+  const auto found = cache.find(key);
+  if (found != cache.end()) {
+    return found->second.get();
+  }
+
+  if (cache.size() >= kMaxCachedRegex) {
+    cache.clear();
+  }
+
+  const auto pattern_uchars = utf8_to_uchar(pattern);
+  UErrorCode status = U_ZERO_ERROR;
+  UParseError parse_error{};
+  RegexPtr regex(uregex_open(
+      pattern_uchars.data(),
+      static_cast<int32_t>(pattern_uchars.size()),
+      0,
+      &parse_error,
+      &status));
+  require_success(status, "uregex_open");
+
+  auto * raw = regex.get();
+  cache.emplace(key, std::move(regex));
+  return raw;
+}
+
+void clear_regex_text(URegularExpression * regex) {
+  UErrorCode status = U_ZERO_ERROR;
+  static const UChar empty_text[] = {0};
+  uregex_setText(regex, empty_text, 0, &status);
+  require_success(status, "uregex_setText reset");
 }
 
 }  // namespace
@@ -302,17 +352,9 @@ std::vector<RegexMatch> find_regex_matches_utf8(
     return {};
   }
 
-  const auto pattern_uchars = utf8_to_uchar(pattern);
-  UErrorCode status = U_ZERO_ERROR;
-  UParseError parse_error{};
-  URegularExpression * regex = uregex_open(
-      pattern_uchars.data(),
-      static_cast<int32_t>(pattern_uchars.size()),
-      0,
-      &parse_error,
-      &status);
-  require_success(status, "uregex_open");
+  auto * regex = cached_regex(pattern);
 
+  UErrorCode status = U_ZERO_ERROR;
   const auto input = utf8_to_uchar(text);
   uregex_setText(
       regex,
@@ -320,7 +362,6 @@ std::vector<RegexMatch> find_regex_matches_utf8(
       static_cast<int32_t>(input.size()),
       &status);
   if (U_FAILURE(status)) {
-    uregex_close(regex);
     require_success(status, "uregex_setText");
   }
 
@@ -330,7 +371,6 @@ std::vector<RegexMatch> find_regex_matches_utf8(
     const auto start = uregex_start(regex, 0, &status);
     const auto end = uregex_end(regex, 0, &status);
     if (U_FAILURE(status)) {
-      uregex_close(regex);
       require_success(status, "uregex_findNext");
     }
     if (start >= 0 && end >= start &&
@@ -343,11 +383,10 @@ std::vector<RegexMatch> find_regex_matches_utf8(
     }
   }
   if (U_FAILURE(status)) {
-    uregex_close(regex);
     require_success(status, "uregex_findNext");
   }
 
-  uregex_close(regex);
+  clear_regex_text(regex);
   return matches;
 }
 

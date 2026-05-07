@@ -242,6 +242,25 @@ json unigram_model() {
   };
 }
 
+json wordpiece_model() {
+  return {
+      {"type", "WordPiece"},
+      {"unk_token", "[UNK]"},
+      {"continuing_subword_prefix", "##"},
+      {"max_input_chars_per_word", 100},
+      {"vocab",
+       {
+           {"[UNK]", 0},
+           {"hello", 1},
+           {"world", 2},
+           {"token", 3},
+           {"##izer", 4},
+           {"##s", 5},
+           {"benchmark", 6},
+       }},
+  };
+}
+
 std::string repeat_word(std::string_view word, std::size_t count) {
   std::string text;
   text.reserve((word.size() + 1) * count);
@@ -508,6 +527,33 @@ int main() {
     (void)tokenizer.encode(text, false);
     print_result(run_case("unigram_trie_cache_ab", 200, text.size(), [&] {
       return checksum_encoding(tokenizer.encode(text, false));
+    }));
+  }
+
+  {
+    const auto tokenizer = load_tokenizer(
+        "tokenizers_cpp_bench_wordpiece",
+        tokenizer_json(wordpiece_model(), {{"type", "Whitespace"}}));
+    const auto text = repeat_word("hello tokenizers world benchmark", 512);
+    (void)tokenizer.encode(text, false);
+    print_result(run_case("wordpiece_trie_repeated", 200, text.size(), [&] {
+      return checksum_encoding(tokenizer.encode(text, false));
+    }));
+  }
+
+  {
+    const auto tokenizer = load_tokenizer(
+        "tokenizers_cpp_bench_wordpiece_small_batch",
+        tokenizer_json(wordpiece_model(), {{"type", "Whitespace"}}));
+    const std::vector<std::string> texts{
+        "hello world",
+        "hello tokenizers",
+        "tokenizers benchmark",
+        "hello world benchmark",
+    };
+    (void)tokenizer.encode_batch(texts, false);
+    print_result(run_case("wordpiece_small_batch", 1000, input_bytes(texts), [&] {
+      return checksum_encodings(tokenizer.encode_batch(texts, false));
     }));
   }
 
