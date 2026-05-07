@@ -47,6 +47,27 @@ Those tests are enabled by default only when `TOKENIZERS_CPP_HF_TEST_DATA_DIR`
 exists. The self-contained tests, examples, install/export smoke tests, and
 generated fixtures do not require that checkout.
 
+## Unicode And Regex Backend
+
+The default backend is vendored/static ICU4C. The upstream Rust tokenizer
+runtime uses a combination of `onig`, `regex`, Unicode normalization/category
+crates, and SentencePiece precompiled data, so the C++ port needs broad Unicode
+normalization, lowercase/category checks, regex Unicode properties, lookahead,
+and offset projection. ICU covers that full surface behind the private
+`tokenizers_cpp::unicode` backend without depending on OS `libicu*.so`/`.dll`
+packages at runtime.
+
+`utf8proc` is a good future candidate for an optional lightweight Unicode
+backend because it is small and covers UTF-8 normalization, case folding,
+grapheme helpers, and Unicode categories. It is not a drop-in replacement for
+the current default because it does not provide regex, and tokenizer parity
+would still need a separate regex engine plus offset-projection glue.
+
+RE2 may be useful later as a private optional fast path for RE2-compatible
+serialized regexes, but it is not the default regex backend. It does not support
+lookaround assertions, while common tokenizer patterns such as the GPT-2
+ByteLevel regex require negative lookahead.
+
 ## CMake Consumption
 
 Source-tree use:
