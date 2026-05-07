@@ -29,6 +29,21 @@ R5 consumer readiness:
 R6 added-token matching performance hardening:
 `docs/r6-added-token-matching-performance.md`.
 
+R6 token-to-id map performance hardening:
+`docs/r6-token-id-map-performance.md`.
+
+R6 BPE cache performance hardening:
+`docs/r6-bpe-cache-performance.md`.
+
+R6 BPE merge heap performance hardening:
+`docs/r6-bpe-heap-performance.md`.
+
+R6 Unigram trie/cache performance hardening:
+`docs/r6-unigram-cache-performance.md`.
+
+R6 performance measurement:
+`docs/r6-performance-measurement.md`.
+
 Open-source release checklist:
 `docs/open-source-checklist.md`.
 
@@ -94,6 +109,33 @@ install prefix and remains ignored by this project's `.gitignore`.
   leftmost-longest selection, `single_word`, `lstrip`/`rstrip`, empty-token
   skip, and UTF-8 byte-offset behavior. The vendored header-only dependency is
   recorded in `THIRD_PARTY_NOTICES.md`.
+- R6 performance hardening also keeps a private persistent `token_to_id_` map
+  inside `Tokenizer::Impl`, maintained together with `id_to_token_` during
+  tokenizer JSON load, post-processor special-token registration, padding token
+  registration, and runtime `add_tokens`. Encode paths and `token_to_id` now
+  reuse this map instead of rebuilding a full vocab lookup table per call.
+- R6 BPE performance hardening adds a private thread-local BPE cache keyed by
+  per-tokenizer cache id and normalized piece text. The cache stores BPE symbol
+  ids plus normalized byte ranges, then projects offsets through the current
+  input piece so repeated words at different original byte positions keep
+  correct offsets. Cache entries are skipped for stochastic dropout and very
+  long pieces, and runtime `add_tokens` invalidates the cache id.
+- R6 deterministic BPE merge hardening replaces repeated full pair rescans with
+  a private priority queue of adjacent merge candidates. The heap path is used
+  for deterministic dropout settings only; stochastic dropout keeps the prior
+  linear scan so random candidate skipping does not drift.
+- R6 Unigram performance hardening builds a private byte trie for Unigram
+  vocabularies and uses a private thread-local cache for repeated normalized
+  pieces. Best-path inference now walks matching trie prefixes instead of
+  scanning the whole vocabulary at each byte position, while final offsets are
+  still projected through the current normalized piece.
+- R6 optional benchmark coverage now includes direct added-token legacy/trie
+  comparison and a tokenizer-level public-API runtime matrix for
+  added-token-heavy encode, repeated short BPE cache behavior, deterministic
+  long-piece BPE heap behavior, Unigram trie/cache behavior, and real
+  GPT-style, RoBERTa, BERT, ALBERT, and Llama tokenizer JSON cases when local
+  HF test data exists. These benchmarks are gated by
+  `TOKENIZERS_CPP_BUILD_BENCHMARKS=ON` and are not CTest assertions.
 - HF test-data-dependent parity tests are now gated by
   `TOKENIZERS_CPP_BUILD_HF_TEST_DATA_TESTS`. The default is ON only when
   `TOKENIZERS_CPP_HF_TEST_DATA_DIR` exists, so a normal open-source clone can
@@ -160,9 +202,11 @@ install prefix and remains ignored by this project's `.gitignore`.
   now has unknown-token fallback and missing-unk failure coverage. BPE now has
   runtime coverage for unknown fallback/fusing, `ignore_merges`, continuing
   subword prefix merge derivation, end-of-word suffix lookup, ASCII byte
-  fallback, and the public raw BPE file-loader surface. Unigram now has
-  deterministic best-path inference, fused unknown, byte-fallback, and real
-  `data/unigram.json` fixture coverage.
+  fallback, heap-backed deterministic merge selection, and the public raw BPE
+  file-loader surface. Unigram now has
+  trie-backed deterministic best-path inference, fused unknown, byte-fallback,
+  repeated-piece cache offset preservation, tokenizer-instance cache
+  separation, and real `data/unigram.json` fixture coverage.
 - Added-token JSON validation now preserves full metadata for `content`,
   `single_word`, `lstrip`, `rstrip`, `normalized`, and `special`, then routes
   records through upstream-style runtime id assignment: existing model ids win,
@@ -256,7 +300,9 @@ install prefix and remains ignored by this project's `.gitignore`.
   byte fallback, including raw non-ByteLevel newline byte fallback. Raw BPE
   encode now works without a ByteLevel pre-tokenizer, and C++ coverage pins
   independent tokenizers with different merge tables so future cache work cannot
-  leak results across instances. BPE `dropout` is loaded and validated;
+  leak results across instances. Deterministic merge selection now uses a
+  private heap and pins stale-candidate invalidation. BPE `dropout` is loaded
+  and validated;
   `null`/`0.0` keeps deterministic merges, `1.0` skips all merges, and
   stochastic `0<p<1` behavior is covered by shape invariants instead of exact
   random output fixtures. `Tokenizer::from_bpe_files(vocab, merges, options)`
@@ -523,8 +569,9 @@ install prefix and remains ignored by this project's `.gitignore`.
 - C++ Unigram runtime parity:
   - `tests/parity/unigram_test.cpp`
   - Result: passed. Coverage corresponds to
-    `unigram.rs::test_unigram_from_file` plus deterministic best-path and
-    byte-fallback behavior from `models/unigram::model`.
+    `unigram.rs::test_unigram_from_file` plus deterministic best-path,
+    byte-fallback behavior from `models/unigram::model`, and R6 trie/cache
+    offset and instance-separation hardening.
 - C++ SentencePiece/ALBERT runtime parity:
   - `tests/parity/sentencepiece_albert_test.cpp`
   - Result: passed. Coverage loads the real local

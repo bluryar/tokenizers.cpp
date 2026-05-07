@@ -30,7 +30,8 @@ Source: `third_party/tokenizers/tokenizers/tests` at
 | `models/bpe::test_bpe_byte_fallback` | covered runtime source | BPE byte fallback and fallback-to-unk behavior |
 | `models/bpe::test_bpe_byte_fallback_newline` | covered runtime source | Raw non-ByteLevel BPE newline byte fallback |
 | `models/bpe::test_ignore_merges` | covered runtime source | BPE full-vocab hit when `ignore_merges=true` |
-| `models/bpe::test_cache_is_per_bpe_instance` | covered narrow runtime source | C++ has no BPE cache yet; fixture pins independent tokenizer instance behavior for future cache work |
+| `models/bpe::test_cache_is_per_bpe_instance` | covered narrow runtime source | C++ R6 BPE cache keeps a private per-tokenizer cache id; fixture pins independent tokenizer instance behavior and repeated-piece offset projection |
+| `local::bpe_heap_stale_candidate` | local hardening | C++ R6 deterministic BPE merge heap preserves rank order and rejects stale adjacency candidates after neighboring merges |
 | `models/bpe::{test_bpe_from_file,test_bpe_from_file_bad_merges,test_bpe_from_file_merge_token_oov}` | covered narrow runtime source | Public `Tokenizer::from_bpe_files` covers vocab/merges files, bad merge lines, and merge-token OOV; tokenizer JSON load also rejects OOV merges |
 | `models/bpe::test_tokenize_with_and_without_dropout` | covered narrow runtime source | Deterministic dropout boundaries: `None`/`0.0` preserve merges and `1.0` skips all merges; stochastic middle probability is covered by shape invariants, not exact token sequences |
 | `processors/bert::bert_processing` | covered runtime source | `[CLS]`/`[SEP]` insertion for single and pair encodings, plus real BERT JSON truncation/padding over raw and pre-tokenized batch APIs |
@@ -75,8 +76,8 @@ Source: `third_party/tokenizers/tokenizers/tests` at
 | `utils/truncation::truncate_encodings_empty` | covered narrow runtime source | Empty truncation across single/pair inputs |
 | `tokenizer/encoding::padding` | covered runtime source | Left/right vector padding over ids, type ids, tokens, offsets, masks, and word ids |
 | `utils/padding::pad_to_multiple` | covered runtime source | Fixed and BatchLongest padding length rounded to `pad_to_multiple_of`, including native single-sequence, pair, direct pre-tokenized pair, and pre-tokenized batch outputs |
-| `unigram.rs::test_unigram_from_file` | covered runtime source | Unigram model load and deterministic best-path inference |
-| `models/unigram::{test_encode,test_unigram_bytefallback}` | covered runtime source | Unigram optimized best path, fused unknowns, and byte fallback |
+| `unigram.rs::test_unigram_from_file` | covered runtime source | Unigram model load and trie-backed deterministic best-path inference |
+| `models/unigram::{test_encode,test_unigram_bytefallback}` | covered runtime source | Unigram optimized best path, fused unknowns, byte fallback, repeated-piece cache offset preservation, and tokenizer-instance cache separation |
 | `unigram.rs::test_sample` | reference-only | Uses sampling; keep as diagnostic unless deterministic parity is required |
 | `unigram.rs::test_train_unigram_from_file` | skip-training | Trainer scope excluded |
 | `training.rs::bpe_values_after_training` | skip-training | Trainer scope excluded |

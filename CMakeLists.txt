@@ -234,6 +234,21 @@ if(TOKENIZERS_CPP_BUILD_BENCHMARKS)
     PRIVATE
       "${CMAKE_CURRENT_SOURCE_DIR}/third_party/aho_corasick"
   )
+
+  add_executable(tokenizers_cpp_r6_performance_benchmark
+    benchmarks/r6_performance_benchmark.cpp
+  )
+  target_link_libraries(tokenizers_cpp_r6_performance_benchmark
+    PRIVATE
+      tokenizers_cpp::tokenizers_cpp
+      nlohmann_json::nlohmann_json
+  )
+  if(EXISTS "${TOKENIZERS_CPP_HF_TEST_DATA_DIR}")
+    target_compile_definitions(tokenizers_cpp_r6_performance_benchmark
+      PRIVATE
+        TOKENIZERS_CPP_HF_TEST_DATA_DIR="${TOKENIZERS_CPP_HF_TEST_DATA_DIR}"
+    )
+  endif()
 endif()
 
 if(TOKENIZERS_CPP_BUILD_TESTS)

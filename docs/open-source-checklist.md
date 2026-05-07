@@ -42,8 +42,8 @@ data under `hf-internal-testing/` through either repository level.
 
 - [ ] `LICENSE` is present.
 - [ ] `NOTICE` is present.
-- [ ] `THIRD_PARTY_NOTICES.md` lists Hugging Face tokenizers, ICU4C, and
-  nlohmann/json.
+- [ ] `THIRD_PARTY_NOTICES.md` lists Hugging Face tokenizers, ICU4C,
+  nlohmann/json, and aho_corasick.hpp.
 - [ ] README license text matches the selected project license.
 
 ## Verification

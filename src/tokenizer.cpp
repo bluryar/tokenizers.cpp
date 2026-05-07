@@ -2,13 +2,16 @@
 #include "tokenizers_cpp/unicode_backend.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstddef>
+#include <functional>
 #include <future>
 #include <fstream>
 #include <limits>
 #include <memory>
 #include <optional>
+#include <queue>
 #include <random>
 #include <stdexcept>
 #include <string_view>
@@ -21,6 +24,19 @@
 #include <aho_corasick/aho_corasick.hpp>
 
 namespace tokenizers_cpp {
+
+template <
+    typename Key,
+    typename Value,
+    typename Hash = std::hash<Key>,
+    typename KeyEqual = std::equal_to<Key>>
+using HashMap = std::unordered_map<Key, Value, Hash, KeyEqual>;
+
+namespace {
+
+std::uint64_t allocate_private_cache_id();
+
+}  // namespace
 
 namespace detail {
 
@@ -260,10 +276,16 @@ struct BpeConfig {
 };
 
 struct UnigramConfig {
+  struct TrieNode {
+    std::vector<std::uint32_t> token_ids;
+    HashMap<unsigned char, std::size_t> children;
+  };
+
   std::optional<std::uint32_t> unk_id;
   bool byte_fallback = false;
   bool fuse_unk = true;
   std::vector<double> scores;
+  std::vector<TrieNode> trie;
   double min_score = 0.0;
 };
 
@@ -357,16 +379,19 @@ class AddedTokenMatcher {
 
 struct Tokenizer::Impl {
   std::vector<std::string> id_to_token_;
+  HashMap<std::string, std::uint32_t> token_to_id_;
   std::vector<bool> special_id_;
   std::vector<detail::AddedToken> added_tokens_;
   std::shared_ptr<AddedTokenMatcher> added_token_matcher_;
   std::string model_type_;
-  std::unordered_map<std::uint64_t, detail::BpeMerge> bpe_merges_;
+  HashMap<std::uint64_t, detail::BpeMerge> bpe_merges_;
   detail::BpeConfig bpe_;
+  std::uint64_t bpe_cache_id_ = allocate_private_cache_id();
   detail::WordPieceConfig wordpiece_;
   detail::WordPieceDecoderConfig wordpiece_decoder_;
   detail::WordLevelConfig wordlevel_;
   detail::UnigramConfig unigram_;
+  std::uint64_t unigram_cache_id_ = allocate_private_cache_id();
   bool byte_level_normalizer_ = false;
   detail::SimpleNormalizerConfig simple_normalizer_;
   detail::BertNormalizerConfig bert_normalizer_;
@@ -391,18 +416,13 @@ namespace {
 
 using json = nlohmann::json;
 
-std::size_t next_codepoint(std::string_view text, std::size_t pos);
+std::atomic<std::uint64_t> g_next_private_cache_id{1};
 
-std::unordered_map<std::string, std::uint32_t> build_token_to_id(
-    const std::vector<std::string> & id_to_token) {
-  std::unordered_map<std::string, std::uint32_t> token_to_id;
-  for (std::uint32_t id = 0; id < id_to_token.size(); ++id) {
-    if (!id_to_token[id].empty()) {
-      token_to_id.emplace(id_to_token[id], id);
-    }
-  }
-  return token_to_id;
+std::uint64_t allocate_private_cache_id() {
+  return g_next_private_cache_id.fetch_add(1, std::memory_order_relaxed);
 }
+
+std::size_t next_codepoint(std::string_view text, std::size_t pos);
 
 template <typename Output, typename EncodeOne>
 std::vector<Output> map_batch_ordered(std::size_t size, EncodeOne encode_one) {
@@ -556,24 +576,50 @@ void ensure_id(
   }
 }
 
+void rebuild_token_to_id(
+    const std::vector<std::string> & id_to_token,
+    HashMap<std::string, std::uint32_t> & token_to_id) {
+  token_to_id.clear();
+  token_to_id.reserve(id_to_token.size());
+  for (std::uint32_t id = 0; id < id_to_token.size(); ++id) {
+    if (!id_to_token[id].empty()) {
+      token_to_id.emplace(id_to_token[id], id);
+    }
+  }
+}
+
 void load_vocab_entry(
     std::vector<std::string> & id_to_token,
+    HashMap<std::string, std::uint32_t> & token_to_id,
     std::vector<bool> & special_id,
     const std::string & token,
     std::uint32_t id,
     bool special = false) {
   ensure_id(id_to_token, special_id, id);
+  const auto & previous_token = id_to_token[id];
+  if (!previous_token.empty() && previous_token != token) {
+    const auto previous = token_to_id.find(previous_token);
+    if (previous != token_to_id.end() && previous->second == id) {
+      token_to_id.erase(previous);
+    }
+  }
   id_to_token[id] = token;
+  if (!token.empty()) {
+    token_to_id.emplace(token, id);
+  }
   special_id[id] = special_id[id] || special;
 }
 
 void load_vocab_object(
     std::vector<std::string> & id_to_token,
+    HashMap<std::string, std::uint32_t> & token_to_id,
     std::vector<bool> & special_id,
     const json & vocab) {
+  token_to_id.reserve(token_to_id.size() + vocab.size());
   for (const auto & item : vocab.items()) {
     load_vocab_entry(
         id_to_token,
+        token_to_id,
         special_id,
         item.key(),
         item.value().get<std::uint32_t>());
@@ -582,16 +628,23 @@ void load_vocab_object(
 
 void load_vocab_array(
     std::vector<std::string> & id_to_token,
+    HashMap<std::string, std::uint32_t> & token_to_id,
     std::vector<bool> & special_id,
     const json & vocab) {
+  token_to_id.reserve(token_to_id.size() + vocab.size());
   for (std::uint32_t id = 0; id < vocab.size(); ++id) {
     const auto & entry = vocab.at(id);
     if (entry.is_array() && !entry.empty() && entry.at(0).is_string()) {
-      load_vocab_entry(id_to_token, special_id, entry.at(0).get<std::string>(), id);
+      load_vocab_entry(
+          id_to_token,
+          token_to_id,
+          special_id,
+          entry.at(0).get<std::string>(),
+          id);
     } else if (entry.is_object() && entry.contains("token")) {
       const auto token = entry.at("token").get<std::string>();
       const auto entry_id = entry.value("id", id);
-      load_vocab_entry(id_to_token, special_id, token, entry_id);
+      load_vocab_entry(id_to_token, token_to_id, special_id, token, entry_id);
     }
   }
 }
@@ -733,9 +786,9 @@ const std::string & byte_level_space() {
   return value;
 }
 
-const std::unordered_map<std::string, unsigned char> & unicode_to_byte() {
-  static const std::unordered_map<std::string, unsigned char> table = [] {
-    std::unordered_map<std::string, unsigned char> result;
+const HashMap<std::string, unsigned char> & unicode_to_byte() {
+  static const HashMap<std::string, unsigned char> table = [] {
+    HashMap<std::string, unsigned char> result;
     const auto & byte_map = byte_to_unicode();
     for (std::size_t byte = 0; byte < byte_map.size(); ++byte) {
       result.emplace(byte_map[byte], static_cast<unsigned char>(byte));
@@ -1187,11 +1240,53 @@ struct BpeSymbol {
   std::size_t end = 0;
 };
 
+struct BpeMergeNode {
+  BpeSymbol symbol;
+  std::optional<std::size_t> previous;
+  std::optional<std::size_t> next;
+  std::uint32_t generation = 0;
+  bool active = true;
+};
+
+struct BpeMergeCandidate {
+  std::uint32_t rank = 0;
+  std::size_t left = 0;
+  std::uint32_t left_generation = 0;
+  std::size_t right = 0;
+  std::uint32_t right_generation = 0;
+  detail::BpeMerge merge;
+};
+
+struct BpeMergeCandidateCompare {
+  bool operator()(
+      const BpeMergeCandidate & lhs,
+      const BpeMergeCandidate & rhs) const {
+    if (lhs.rank != rhs.rank) {
+      return lhs.rank > rhs.rank;
+    }
+    return lhs.left > rhs.left;
+  }
+};
+
 struct BpeToken {
   std::uint32_t id = 0;
   std::string value;
   Offset offset;
 };
+
+using BpeCachedSymbols = std::vector<BpeSymbol>;
+using BpeThreadCache = HashMap<std::string, BpeCachedSymbols>;
+using UnigramCachedTokens = std::vector<BpeToken>;
+using UnigramThreadCache = HashMap<std::string, UnigramCachedTokens>;
+
+static constexpr std::size_t kBpeCacheCapacity = 10000;
+static constexpr std::size_t kBpeCacheMaxLength = 256;
+static constexpr std::size_t kUnigramCacheCapacity = 10000;
+static constexpr std::size_t kUnigramCacheMaxLength = 256;
+
+thread_local HashMap<std::uint64_t, BpeThreadCache> bpe_thread_cache;
+thread_local HashMap<std::uint64_t, UnigramThreadCache>
+    unigram_thread_cache;
 
 struct UnigramBestPathNode {
   std::uint32_t id = 0;
@@ -2970,33 +3065,52 @@ Offset convert_normalized_offsets(
 }
 
 std::uint32_t require_token_id(
-    const std::unordered_map<std::string, std::uint32_t> & token_to_id,
+    const HashMap<std::string, std::uint32_t> & token_to_id,
     const std::string & token);
 
-std::vector<BpeToken> tokenize_bpe_piece(
+std::vector<BpeToken> bpe_symbols_to_tokens(
     const ByteLevelPiece & piece,
     const std::vector<std::string> & id_to_token,
-    const std::unordered_map<std::string, std::uint32_t> & token_to_id,
-    const std::unordered_map<std::uint64_t, detail::BpeMerge> & merges,
+    const std::vector<BpeSymbol> & symbols) {
+  std::vector<BpeToken> tokens;
+  tokens.reserve(symbols.size());
+  for (const auto & symbol : symbols) {
+    if (symbol.id >= id_to_token.size()) {
+      continue;
+    }
+    tokens.push_back(BpeToken{
+        symbol.id,
+        id_to_token[symbol.id],
+        convert_normalized_offsets(piece, symbol.start, symbol.end)});
+  }
+  return tokens;
+}
+
+std::vector<BpeSymbol> merge_bpe_symbols(
+    std::vector<BpeSymbol> symbols,
+    const HashMap<std::uint64_t, detail::BpeMerge> & merges,
+    const detail::BpeConfig & config);
+
+std::vector<BpeSymbol> tokenize_bpe_symbols(
+    std::string_view piece,
+    const HashMap<std::string, std::uint32_t> & token_to_id,
+    const HashMap<std::uint64_t, detail::BpeMerge> & merges,
     const detail::BpeConfig & config) {
   std::vector<BpeSymbol> symbols;
 
   if (config.ignore_merges) {
-    const auto found = token_to_id.find(piece.text);
+    const auto found = token_to_id.find(std::string(piece));
     if (found != token_to_id.end()) {
-      return {BpeToken{
-          found->second,
-          piece.text,
-          convert_normalized_offsets(piece, 0, piece.text.size())}};
+      return {BpeSymbol{found->second, 0, piece.size()}};
     }
   }
 
   std::optional<BpeSymbol> pending_unk;
-  for (std::size_t pos = 0; pos < piece.text.size();) {
-    const auto end = next_codepoint(piece.text, pos);
+  for (std::size_t pos = 0; pos < piece.size();) {
+    const auto end = next_codepoint(piece, pos);
     const auto is_first = pos == 0;
-    const auto is_last = end == piece.text.size();
-    auto symbol = piece.text.substr(pos, end - pos);
+    const auto is_last = end == piece.size();
+    auto symbol = std::string(piece.substr(pos, end - pos));
 
     if (!is_first && config.continuing_subword_prefix) {
       symbol = *config.continuing_subword_prefix + symbol;
@@ -3052,6 +3166,13 @@ std::vector<BpeToken> tokenize_bpe_piece(
   }
   flush_pending_unk(symbols, pending_unk);
 
+  return merge_bpe_symbols(std::move(symbols), merges, config);
+}
+
+std::vector<BpeSymbol> merge_bpe_symbols_linear(
+    std::vector<BpeSymbol> symbols,
+    const HashMap<std::uint64_t, detail::BpeMerge> & merges,
+    const detail::BpeConfig & config) {
   while (symbols.size() > 1) {
     std::optional<std::size_t> best_index;
     detail::BpeMerge best_merge;
@@ -3079,18 +3200,165 @@ std::vector<BpeToken> tokenize_bpe_piece(
     symbols.erase(symbols.begin() + static_cast<std::ptrdiff_t>(*best_index + 1));
   }
 
-  std::vector<BpeToken> tokens;
-  tokens.reserve(symbols.size());
-  for (const auto & symbol : symbols) {
-    if (symbol.id >= id_to_token.size()) {
+  return symbols;
+}
+
+std::vector<BpeSymbol> merge_bpe_symbols_heap(
+    std::vector<BpeSymbol> symbols,
+    const HashMap<std::uint64_t, detail::BpeMerge> & merges) {
+  if (symbols.size() <= 1 || merges.empty()) {
+    return symbols;
+  }
+
+  std::vector<BpeMergeNode> nodes;
+  nodes.reserve(symbols.size());
+  for (std::size_t index = 0; index < symbols.size(); ++index) {
+    nodes.push_back(BpeMergeNode{
+        symbols[index],
+        index > 0 ? std::optional<std::size_t>(index - 1) : std::nullopt,
+        index + 1 < symbols.size() ? std::optional<std::size_t>(index + 1) : std::nullopt,
+        0,
+        true});
+  }
+
+  std::priority_queue<
+      BpeMergeCandidate,
+      std::vector<BpeMergeCandidate>,
+      BpeMergeCandidateCompare>
+      candidates;
+
+  const auto push_candidate = [&nodes, &merges, &candidates](std::size_t left_index) {
+    if (left_index >= nodes.size() || !nodes[left_index].active ||
+        !nodes[left_index].next) {
+      return;
+    }
+    const auto right_index = *nodes[left_index].next;
+    if (right_index >= nodes.size() || !nodes[right_index].active) {
+      return;
+    }
+    const auto found = merges.find(
+        bpe_pair_key(nodes[left_index].symbol.id, nodes[right_index].symbol.id));
+    if (found == merges.end()) {
+      return;
+    }
+    candidates.push(BpeMergeCandidate{
+        found->second.rank,
+        left_index,
+        nodes[left_index].generation,
+        right_index,
+        nodes[right_index].generation,
+        found->second});
+  };
+
+  for (std::size_t index = 0; index + 1 < nodes.size(); ++index) {
+    push_candidate(index);
+  }
+
+  std::size_t active_count = nodes.size();
+  while (active_count > 1 && !candidates.empty()) {
+    const auto candidate = candidates.top();
+    candidates.pop();
+    if (candidate.left >= nodes.size() || candidate.right >= nodes.size()) {
       continue;
     }
-    tokens.push_back(BpeToken{
-        symbol.id,
-        id_to_token[symbol.id],
-        convert_normalized_offsets(piece, symbol.start, symbol.end)});
+
+    auto & left = nodes[candidate.left];
+    auto & right = nodes[candidate.right];
+    if (!left.active || !right.active || left.next != candidate.right ||
+        right.previous != candidate.left ||
+        left.generation != candidate.left_generation ||
+        right.generation != candidate.right_generation) {
+      continue;
+    }
+
+    left.symbol.id = candidate.merge.new_id;
+    left.symbol.end = right.symbol.end;
+    ++left.generation;
+    right.active = false;
+    ++right.generation;
+
+    const auto previous = left.previous;
+    const auto next = right.next;
+    left.next = next;
+    if (next) {
+      nodes[*next].previous = candidate.left;
+    }
+    --active_count;
+
+    if (previous) {
+      push_candidate(*previous);
+    }
+    push_candidate(candidate.left);
   }
-  return tokens;
+
+  std::vector<BpeSymbol> output;
+  output.reserve(active_count);
+  for (std::size_t index = 0; index < nodes.size(); ++index) {
+    if (nodes[index].active) {
+      output.push_back(nodes[index].symbol);
+    }
+  }
+  return output;
+}
+
+std::vector<BpeSymbol> merge_bpe_symbols(
+    std::vector<BpeSymbol> symbols,
+    const HashMap<std::uint64_t, detail::BpeMerge> & merges,
+    const detail::BpeConfig & config) {
+  if (config.dropout && *config.dropout > 0.0) {
+    return merge_bpe_symbols_linear(std::move(symbols), merges, config);
+  }
+  return merge_bpe_symbols_heap(std::move(symbols), merges);
+}
+
+bool can_cache_bpe_piece(
+    std::uint64_t cache_id,
+    std::string_view piece,
+    const detail::BpeConfig & config) {
+  return cache_id != 0 && piece.size() < kBpeCacheMaxLength &&
+      (!config.dropout || *config.dropout <= 0.0);
+}
+
+std::vector<BpeSymbol> tokenize_bpe_symbols_with_cache(
+    std::string_view piece,
+    const HashMap<std::string, std::uint32_t> & token_to_id,
+    const HashMap<std::uint64_t, detail::BpeMerge> & merges,
+    const detail::BpeConfig & config,
+    std::uint64_t cache_id) {
+  if (!can_cache_bpe_piece(cache_id, piece, config)) {
+    return tokenize_bpe_symbols(piece, token_to_id, merges, config);
+  }
+
+  auto & cache = bpe_thread_cache[cache_id];
+  const auto key = std::string(piece);
+  const auto hit = cache.find(key);
+  if (hit != cache.end()) {
+    return hit->second;
+  }
+
+  auto symbols = tokenize_bpe_symbols(piece, token_to_id, merges, config);
+  if (cache.size() < kBpeCacheCapacity) {
+    cache.emplace(key, symbols);
+  }
+  return symbols;
+}
+
+std::vector<BpeToken> tokenize_bpe_piece(
+    const ByteLevelPiece & piece,
+    const std::vector<std::string> & id_to_token,
+    const HashMap<std::string, std::uint32_t> & token_to_id,
+    const HashMap<std::uint64_t, detail::BpeMerge> & merges,
+    const detail::BpeConfig & config,
+    std::uint64_t cache_id) {
+  return bpe_symbols_to_tokens(
+      piece,
+      id_to_token,
+      tokenize_bpe_symbols_with_cache(
+          piece.text,
+          token_to_id,
+          merges,
+          config,
+          cache_id));
 }
 
 std::size_t count_codepoints(std::string_view text) {
@@ -3102,7 +3370,7 @@ std::size_t count_codepoints(std::string_view text) {
 }
 
 std::uint32_t require_token_id(
-    const std::unordered_map<std::string, std::uint32_t> & token_to_id,
+    const HashMap<std::string, std::uint32_t> & token_to_id,
     const std::string & token) {
   const auto found = token_to_id.find(token);
   if (found == token_to_id.end()) {
@@ -3113,7 +3381,7 @@ std::uint32_t require_token_id(
 
 std::vector<BpeToken> tokenize_wordpiece_piece(
     std::string_view piece,
-    const std::unordered_map<std::string, std::uint32_t> & token_to_id,
+    const HashMap<std::string, std::uint32_t> & token_to_id,
     const detail::WordPieceConfig & config) {
   if (piece.empty()) {
     return {};
@@ -3156,7 +3424,7 @@ std::vector<BpeToken> tokenize_wordpiece_piece(
 
 BpeToken tokenize_wordlevel_piece(
     std::string_view piece,
-    const std::unordered_map<std::string, std::uint32_t> & token_to_id,
+    const HashMap<std::string, std::uint32_t> & token_to_id,
     const detail::WordLevelConfig & config) {
   const auto found = token_to_id.find(std::string(piece));
   if (found != token_to_id.end()) {
@@ -3167,21 +3435,22 @@ BpeToken tokenize_wordlevel_piece(
   return BpeToken{unk_id, config.unk_token, Offset{0, piece.size()}};
 }
 
-std::vector<BpeToken> tokenize_unigram_piece(
+std::vector<BpeToken> tokenize_unigram_piece_uncached(
     std::string_view piece,
     const std::vector<std::string> & id_to_token,
-    const std::unordered_map<std::string, std::uint32_t> & token_to_id,
+    const HashMap<std::string, std::uint32_t> & token_to_id,
     const detail::UnigramConfig & config) {
   if (piece.empty()) {
     return {};
   }
-  if (config.scores.size() != id_to_token.size()) {
-    throw std::runtime_error("Unigram scores and vocabulary size mismatch");
+  if (config.scores.size() > id_to_token.size()) {
+    throw std::runtime_error("Unigram scores exceed vocabulary size");
   }
 
   constexpr double kUnkPenalty = 10.0;
   const double unk_score = config.min_score - kUnkPenalty;
   const auto size = piece.size();
+  const auto vocab_size = config.scores.size();
   std::vector<UnigramBestPathNode> best(size + 1);
   best[0].starts_at = 0;
 
@@ -3193,23 +3462,57 @@ std::vector<BpeToken> tokenize_unigram_piece(
 
     const auto mblen = next_codepoint(piece, starts_at) - starts_at;
     bool has_single_node = false;
-    for (std::uint32_t id = 0; id < id_to_token.size(); ++id) {
-      const auto & token = id_to_token[id];
-      if (token.empty() || starts_at + token.size() > size ||
-          piece.substr(starts_at, token.size()) != token) {
-        continue;
-      }
 
-      const auto key_pos = starts_at + token.size();
-      auto & target = best[key_pos];
-      const auto candidate_score = best[starts_at].score + config.scores[id];
-      if (!target.starts_at || candidate_score > target.score) {
-        target.score = candidate_score;
-        target.starts_at = starts_at;
-        target.id = id;
+    if (!config.trie.empty()) {
+      std::size_t node_index = 0;
+      for (std::size_t end = starts_at; end < size;) {
+        const auto byte = static_cast<unsigned char>(piece[end]);
+        const auto child = config.trie[node_index].children.find(byte);
+        if (child == config.trie[node_index].children.end()) {
+          break;
+        }
+
+        ++end;
+        node_index = child->second;
+        if (node_index >= config.trie.size()) {
+          break;
+        }
+
+        for (const auto id : config.trie[node_index].token_ids) {
+          if (id >= vocab_size) {
+            continue;
+          }
+          auto & target = best[end];
+          const auto candidate_score = best[starts_at].score + config.scores[id];
+          if (!target.starts_at || candidate_score > target.score) {
+            target.score = candidate_score;
+            target.starts_at = starts_at;
+            target.id = id;
+          }
+          if (!has_single_node && end - starts_at == mblen) {
+            has_single_node = true;
+          }
+        }
       }
-      if (!has_single_node && token.size() == mblen) {
-        has_single_node = true;
+    } else {
+      for (std::uint32_t id = 0; id < vocab_size; ++id) {
+        const auto & token = id_to_token[id];
+        if (token.empty() || starts_at + token.size() > size ||
+            piece.substr(starts_at, token.size()) != token) {
+          continue;
+        }
+
+        const auto key_pos = starts_at + token.size();
+        auto & target = best[key_pos];
+        const auto candidate_score = best[starts_at].score + config.scores[id];
+        if (!target.starts_at || candidate_score > target.score) {
+          target.score = candidate_score;
+          target.starts_at = starts_at;
+          target.id = id;
+        }
+        if (!has_single_node && token.size() == mblen) {
+          has_single_node = true;
+        }
       }
     }
 
@@ -3290,6 +3593,34 @@ std::vector<BpeToken> tokenize_unigram_piece(
     tokens.push_back(BpeToken{*config.unk_id, value, Offset{span.start, span.end}});
   }
 
+  return tokens;
+}
+
+bool can_cache_unigram_piece(std::uint64_t cache_id, std::string_view piece) {
+  return cache_id != 0 && piece.size() < kUnigramCacheMaxLength;
+}
+
+std::vector<BpeToken> tokenize_unigram_piece(
+    std::string_view piece,
+    const std::vector<std::string> & id_to_token,
+    const HashMap<std::string, std::uint32_t> & token_to_id,
+    const detail::UnigramConfig & config,
+    std::uint64_t cache_id) {
+  if (!can_cache_unigram_piece(cache_id, piece)) {
+    return tokenize_unigram_piece_uncached(piece, id_to_token, token_to_id, config);
+  }
+
+  auto & cache = unigram_thread_cache[cache_id];
+  const auto key = std::string(piece);
+  const auto hit = cache.find(key);
+  if (hit != cache.end()) {
+    return hit->second;
+  }
+
+  auto tokens = tokenize_unigram_piece_uncached(piece, id_to_token, token_to_id, config);
+  if (cache.size() < kUnigramCacheCapacity) {
+    cache.emplace(key, tokens);
+  }
   return tokens;
 }
 
@@ -3920,12 +4251,14 @@ void encode_input_split(
     const std::vector<std::string> & id_to_token,
     const std::vector<bool> & special_id,
     const std::string & model_type,
-    const std::unordered_map<std::string, std::uint32_t> & token_to_id_map,
-    const std::unordered_map<std::uint64_t, detail::BpeMerge> & bpe_merges,
+    const HashMap<std::string, std::uint32_t> & token_to_id_map,
+    const HashMap<std::uint64_t, detail::BpeMerge> & bpe_merges,
     const detail::BpeConfig & bpe,
+    std::uint64_t bpe_cache_id,
     const detail::WordPieceConfig & wordpiece,
     const detail::WordLevelConfig & wordlevel,
     const detail::UnigramConfig & unigram,
+    std::uint64_t unigram_cache_id,
     bool byte_level_normalizer,
     const detail::SimpleNormalizerConfig & simple_normalizer,
     const detail::BertNormalizerConfig & bert_normalizer,
@@ -3962,7 +4295,8 @@ void encode_input_split(
           id_to_token,
           token_to_id_map,
           bpe_merges,
-          bpe);
+          bpe,
+          bpe_cache_id);
       for (const auto & token : tokens) {
         append_encoding_token(
             encoding,
@@ -3994,7 +4328,8 @@ void encode_input_split(
             id_to_token,
             token_to_id_map,
             bpe_merges,
-            bpe);
+            bpe,
+            bpe_cache_id);
         for (const auto & token : tokens) {
           append_encoding_token(
               encoding,
@@ -4025,7 +4360,8 @@ void encode_input_split(
           id_to_token,
           token_to_id_map,
           bpe_merges,
-          bpe);
+          bpe,
+          bpe_cache_id);
       for (const auto & token : tokens) {
         append_encoding_token(
             encoding,
@@ -4085,7 +4421,8 @@ void encode_input_split(
           piece.text,
           id_to_token,
           token_to_id_map,
-          unigram);
+          unigram,
+          unigram_cache_id);
       for (const auto & token : tokens) {
         append_encoding_token(
             encoding,
@@ -5364,7 +5701,7 @@ detail::TemplateProcessingConfig parse_template_processing_config(const json & w
   }
 
   const auto & special_tokens = wrapper.at("special_tokens");
-  std::unordered_map<std::string, detail::ProcessingPiece> specials;
+  HashMap<std::string, detail::ProcessingPiece> specials;
   for (const auto & item : special_tokens.items()) {
     if (!item.value().is_object()) {
       throw std::runtime_error("TemplateProcessing special token entries must be objects");
@@ -5698,8 +6035,8 @@ std::pair<std::string, std::string> parse_bpe_merge_pair(const json & merge) {
 }
 
 void load_bpe_merges(
-    std::unordered_map<std::uint64_t, detail::BpeMerge> & bpe_merges,
-    const std::unordered_map<std::string, std::uint32_t> & token_to_id,
+    HashMap<std::uint64_t, detail::BpeMerge> & bpe_merges,
+    const HashMap<std::string, std::uint32_t> & token_to_id,
     const detail::BpeConfig & config,
     const json & merges) {
   bpe_merges.clear();
@@ -5808,6 +6145,37 @@ double min_score(const std::vector<double> & scores) {
     return 0.0;
   }
   return *std::min_element(scores.begin(), scores.end());
+}
+
+void build_unigram_trie(
+    const std::vector<std::string> & id_to_token,
+    detail::UnigramConfig & config) {
+  config.trie.clear();
+  config.trie.push_back(detail::UnigramConfig::TrieNode{});
+
+  const auto vocab_size = std::min(id_to_token.size(), config.scores.size());
+  for (std::size_t index = 0; index < vocab_size; ++index) {
+    const auto & token = id_to_token[index];
+    if (token.empty()) {
+      continue;
+    }
+
+    std::size_t node_index = 0;
+    for (const auto byte_value : token) {
+      const auto byte = static_cast<unsigned char>(byte_value);
+      auto & children = config.trie[node_index].children;
+      const auto child = children.find(byte);
+      if (child == children.end()) {
+        const auto next_index = config.trie.size();
+        children.emplace(byte, next_index);
+        config.trie.push_back(detail::UnigramConfig::TrieNode{});
+        node_index = next_index;
+      } else {
+        node_index = child->second;
+      }
+    }
+    config.trie[node_index].token_ids.push_back(static_cast<std::uint32_t>(index));
+  }
 }
 
 std::string model_type_from_json(const json & model) {
@@ -5961,6 +6329,7 @@ void validate_optional_wrapper(
 
 void load_special_piece_vocab(
     std::vector<std::string> & id_to_token,
+    HashMap<std::string, std::uint32_t> & token_to_id,
     std::vector<bool> & special_id,
     const detail::ProcessingPiece & piece) {
   if (piece.kind != detail::ProcessingPieceKind::Special) {
@@ -5972,6 +6341,7 @@ void load_special_piece_vocab(
   for (std::size_t index = 0; index < piece.ids.size(); ++index) {
     load_vocab_entry(
         id_to_token,
+        token_to_id,
         special_id,
         piece.tokens[index],
         piece.ids[index],
@@ -5981,27 +6351,46 @@ void load_special_piece_vocab(
 
 void load_processing_template_vocab(
     std::vector<std::string> & id_to_token,
+    HashMap<std::string, std::uint32_t> & token_to_id,
     std::vector<bool> & special_id,
     const std::vector<detail::ProcessingPiece> & pieces) {
   for (const auto & piece : pieces) {
-    load_special_piece_vocab(id_to_token, special_id, piece);
+    load_special_piece_vocab(id_to_token, token_to_id, special_id, piece);
   }
 }
 
 void load_special_processing_vocab(
     std::vector<std::string> & id_to_token,
+    HashMap<std::string, std::uint32_t> & token_to_id,
     std::vector<bool> & special_id,
     const detail::BertProcessingConfig & config) {
-  load_processing_template_vocab(id_to_token, special_id, config.single_template);
-  load_processing_template_vocab(id_to_token, special_id, config.pair_template);
+  load_processing_template_vocab(
+      id_to_token,
+      token_to_id,
+      special_id,
+      config.single_template);
+  load_processing_template_vocab(
+      id_to_token,
+      token_to_id,
+      special_id,
+      config.pair_template);
 }
 
 void load_template_processing_vocab(
     std::vector<std::string> & id_to_token,
+    HashMap<std::string, std::uint32_t> & token_to_id,
     std::vector<bool> & special_id,
     const detail::TemplateProcessingConfig & config) {
-  load_processing_template_vocab(id_to_token, special_id, config.single_template);
-  load_processing_template_vocab(id_to_token, special_id, config.pair_template);
+  load_processing_template_vocab(
+      id_to_token,
+      token_to_id,
+      special_id,
+      config.single_template);
+  load_processing_template_vocab(
+      id_to_token,
+      token_to_id,
+      special_id,
+      config.pair_template);
 }
 
 }  // namespace
@@ -6161,11 +6550,20 @@ Tokenizer Tokenizer::from_file(const std::filesystem::path & path) {
   if (model.contains("vocab")) {
     const auto & vocab = model.at("vocab");
     if (vocab.is_object()) {
-      load_vocab_object(tokenizer.impl_->id_to_token_, tokenizer.impl_->special_id_, vocab);
+      load_vocab_object(
+          tokenizer.impl_->id_to_token_,
+          tokenizer.impl_->token_to_id_,
+          tokenizer.impl_->special_id_,
+          vocab);
     } else if (vocab.is_array()) {
-      load_vocab_array(tokenizer.impl_->id_to_token_, tokenizer.impl_->special_id_, vocab);
+      load_vocab_array(
+          tokenizer.impl_->id_to_token_,
+          tokenizer.impl_->token_to_id_,
+          tokenizer.impl_->special_id_,
+          vocab);
     }
   }
+  rebuild_token_to_id(tokenizer.impl_->id_to_token_, tokenizer.impl_->token_to_id_);
   if (tokenizer.impl_->model_type_ == "BPE") {
     tokenizer.impl_->bpe_.dropout =
         optional_model_probability_or_null(model, "BPE", "dropout");
@@ -6181,7 +6579,7 @@ Tokenizer Tokenizer::from_file(const std::filesystem::path & path) {
         optional_model_bool(model, "BPE", "ignore_merges", false);
     load_bpe_merges(
         tokenizer.impl_->bpe_merges_,
-        build_token_to_id(tokenizer.impl_->id_to_token_),
+        tokenizer.impl_->token_to_id_,
         tokenizer.impl_->bpe_,
         model.at("merges"));
   }
@@ -6205,6 +6603,7 @@ Tokenizer Tokenizer::from_file(const std::filesystem::path & path) {
         optional_model_bool(model, "Unigram", "fuse_unk", true);
     tokenizer.impl_->unigram_.scores = load_unigram_scores(model.at("vocab"));
     tokenizer.impl_->unigram_.min_score = min_score(tokenizer.impl_->unigram_.scores);
+    build_unigram_trie(tokenizer.impl_->id_to_token_, tokenizer.impl_->unigram_);
   }
 
   if (auto config = parse_direct_bert_normalizer_config(root)) {
@@ -6242,6 +6641,7 @@ Tokenizer Tokenizer::from_file(const std::filesystem::path & path) {
     tokenizer.impl_->bert_processing_ = *config;
     load_special_processing_vocab(
         tokenizer.impl_->id_to_token_,
+        tokenizer.impl_->token_to_id_,
         tokenizer.impl_->special_id_,
         tokenizer.impl_->bert_processing_);
   }
@@ -6249,6 +6649,7 @@ Tokenizer Tokenizer::from_file(const std::filesystem::path & path) {
     tokenizer.impl_->bert_processing_ = *config;
     load_special_processing_vocab(
         tokenizer.impl_->id_to_token_,
+        tokenizer.impl_->token_to_id_,
         tokenizer.impl_->special_id_,
         tokenizer.impl_->bert_processing_);
     tokenizer.impl_->byte_level_post_processor_ =
@@ -6258,6 +6659,7 @@ Tokenizer Tokenizer::from_file(const std::filesystem::path & path) {
     tokenizer.impl_->template_processing_ = *config;
     load_template_processing_vocab(
         tokenizer.impl_->id_to_token_,
+        tokenizer.impl_->token_to_id_,
         tokenizer.impl_->special_id_,
         tokenizer.impl_->template_processing_);
   }
@@ -6269,6 +6671,7 @@ Tokenizer Tokenizer::from_file(const std::filesystem::path & path) {
       tokenizer.impl_->bert_processing_ = *config->special_processing;
       load_special_processing_vocab(
           tokenizer.impl_->id_to_token_,
+          tokenizer.impl_->token_to_id_,
           tokenizer.impl_->special_id_,
           tokenizer.impl_->bert_processing_);
     }
@@ -6276,6 +6679,7 @@ Tokenizer Tokenizer::from_file(const std::filesystem::path & path) {
       tokenizer.impl_->template_processing_ = *config->template_processing;
       load_template_processing_vocab(
           tokenizer.impl_->id_to_token_,
+          tokenizer.impl_->token_to_id_,
           tokenizer.impl_->special_id_,
           tokenizer.impl_->template_processing_);
     }
@@ -6305,6 +6709,7 @@ Tokenizer Tokenizer::from_file(const std::filesystem::path & path) {
     tokenizer.impl_->padding_ = *config;
     load_vocab_entry(
         tokenizer.impl_->id_to_token_,
+        tokenizer.impl_->token_to_id_,
         tokenizer.impl_->special_id_,
         tokenizer.impl_->padding_.pad_token,
         tokenizer.impl_->padding_.pad_id,
@@ -6321,13 +6726,13 @@ Tokenizer Tokenizer::from_file(const std::filesystem::path & path) {
         continue;
       }
 
-      const auto token_to_id_map = build_token_to_id(tokenizer.impl_->id_to_token_);
-      const auto found_id = token_to_id_map.find(added_token.content);
-      added_token.id = found_id == token_to_id_map.end()
+      const auto found_id = tokenizer.impl_->token_to_id_.find(added_token.content);
+      added_token.id = found_id == tokenizer.impl_->token_to_id_.end()
           ? static_cast<std::uint32_t>(tokenizer.impl_->id_to_token_.size())
           : found_id->second;
       load_vocab_entry(
           tokenizer.impl_->id_to_token_,
+          tokenizer.impl_->token_to_id_,
           tokenizer.impl_->special_id_,
           added_token.content,
           added_token.id,
@@ -6339,6 +6744,7 @@ Tokenizer Tokenizer::from_file(const std::filesystem::path & path) {
         tokenizer.impl_->added_token_matcher_);
   }
 
+  rebuild_token_to_id(tokenizer.impl_->id_to_token_, tokenizer.impl_->token_to_id_);
   return tokenizer;
 }
 
@@ -6353,12 +6759,18 @@ Tokenizer Tokenizer::from_bpe_files(
   Tokenizer tokenizer;
   tokenizer.impl_->model_type_ = "BPE";
   tokenizer.impl_->bpe_ = bpe_config_from_options(options);
-  load_vocab_object(tokenizer.impl_->id_to_token_, tokenizer.impl_->special_id_, vocab);
+  load_vocab_object(
+      tokenizer.impl_->id_to_token_,
+      tokenizer.impl_->token_to_id_,
+      tokenizer.impl_->special_id_,
+      vocab);
+  rebuild_token_to_id(tokenizer.impl_->id_to_token_, tokenizer.impl_->token_to_id_);
   load_bpe_merges(
       tokenizer.impl_->bpe_merges_,
-      build_token_to_id(tokenizer.impl_->id_to_token_),
+      tokenizer.impl_->token_to_id_,
       tokenizer.impl_->bpe_,
       merges);
+  rebuild_token_to_id(tokenizer.impl_->id_to_token_, tokenizer.impl_->token_to_id_);
   return tokenizer;
 }
 
@@ -6409,9 +6821,8 @@ std::size_t Tokenizer::add_tokens(const std::vector<AddedToken> & tokens) {
       continue;
     }
 
-    const auto token_to_id_map = build_token_to_id(impl_->id_to_token_);
-    const auto found_id = token_to_id_map.find(added_token.content);
-    const bool has_existing_id = found_id != token_to_id_map.end();
+    const auto found_id = impl_->token_to_id_.find(added_token.content);
+    const bool has_existing_id = found_id != impl_->token_to_id_.end();
     added_token.id = has_existing_id
         ? found_id->second
         : static_cast<std::uint32_t>(impl_->id_to_token_.size());
@@ -6425,6 +6836,7 @@ std::size_t Tokenizer::add_tokens(const std::vector<AddedToken> & tokens) {
           : added_token.normalized_content;
       load_vocab_entry(
           impl_->id_to_token_,
+          impl_->token_to_id_,
           impl_->special_id_,
           stored_token,
           added_token.id,
@@ -6434,6 +6846,9 @@ std::size_t Tokenizer::add_tokens(const std::vector<AddedToken> & tokens) {
     ++added;
   }
   if (added > 0) {
+    rebuild_token_to_id(impl_->id_to_token_, impl_->token_to_id_);
+    impl_->bpe_cache_id_ = allocate_private_cache_id();
+    impl_->unigram_cache_id_ = allocate_private_cache_id();
     rebuild_added_token_matcher(impl_->added_tokens_, impl_->added_token_matcher_);
   }
   return added;
@@ -6487,7 +6902,6 @@ Encoding Tokenizer::encode_text(
     bool apply_truncation,
     bool apply_padding_config) const {
   Encoding encoding;
-  const auto token_to_id_map = build_token_to_id(impl_->id_to_token_);
   const auto splits =
       split_on_added_tokens(text, impl_->added_tokens_, impl_->added_token_matcher_.get());
 
@@ -6499,12 +6913,14 @@ Encoding Tokenizer::encode_text(
         impl_->id_to_token_,
         impl_->special_id_,
         impl_->model_type_,
-        token_to_id_map,
+        impl_->token_to_id_,
         impl_->bpe_merges_,
         impl_->bpe_,
+        impl_->bpe_cache_id_,
         impl_->wordpiece_,
         impl_->wordlevel_,
         impl_->unigram_,
+        impl_->unigram_cache_id_,
         impl_->byte_level_normalizer_,
         impl_->simple_normalizer_,
         impl_->bert_normalizer_,
@@ -6568,7 +6984,6 @@ Encoding Tokenizer::encode_pre_tokenized_words(
     bool apply_truncation,
     bool apply_padding_config) const {
   Encoding encoding;
-  const auto token_to_id_map = build_token_to_id(impl_->id_to_token_);
 
   std::uint32_t next_word_id = 0;
   for (std::size_t index = 0; index < pre_tokenized.size(); ++index) {
@@ -6587,12 +7002,14 @@ Encoding Tokenizer::encode_pre_tokenized_words(
           impl_->id_to_token_,
           impl_->special_id_,
           impl_->model_type_,
-          token_to_id_map,
+          impl_->token_to_id_,
           impl_->bpe_merges_,
           impl_->bpe_,
+          impl_->bpe_cache_id_,
           impl_->wordpiece_,
           impl_->wordlevel_,
           impl_->unigram_,
+          impl_->unigram_cache_id_,
           impl_->byte_level_normalizer_,
           impl_->simple_normalizer_,
           impl_->bert_normalizer_,
@@ -6952,9 +7369,8 @@ DecodeStream Tokenizer::decode_stream(bool skip_special_tokens) const {
 }
 
 std::optional<std::uint32_t> Tokenizer::token_to_id(const std::string & token) const {
-  const auto token_to_id_map = build_token_to_id(impl_->id_to_token_);
-  const auto found = token_to_id_map.find(token);
-  if (found != token_to_id_map.end()) {
+  const auto found = impl_->token_to_id_.find(token);
+  if (found != impl_->token_to_id_.end()) {
     return found->second;
   }
   for (const auto & added_token : impl_->added_tokens_) {

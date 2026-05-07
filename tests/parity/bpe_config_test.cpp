@@ -304,6 +304,76 @@ void test_raw_bpe_cache_does_not_cross_instances() {
   assert(b2.tokens == b.tokens);
 }
 
+void test_bpe_cache_preserves_offsets_for_repeated_pieces() {
+  const auto tokenizer = load_tokenizer(
+      "tokenizers_cpp_bpe_cache_repeated_offsets.json",
+      {
+          {"type", "BPE"},
+          {"vocab",
+           {
+               {"h", 0},
+               {"e", 1},
+               {"l", 2},
+               {"o", 3},
+               {"he", 4},
+               {"hel", 5},
+               {"hell", 6},
+               {"hello", 7},
+           }},
+          {"merges",
+           json::array({
+               json::array({"h", "e"}),
+               json::array({"he", "l"}),
+               json::array({"hel", "l"}),
+               json::array({"hell", "o"}),
+           })},
+      },
+      {
+          {"type", "Sequence"},
+          {"pretokenizers", json::array({{{"type", "Whitespace"}}})},
+      });
+
+  const auto first = tokenizer.encode("hello hello", false);
+  const auto second = tokenizer.encode("hello hello", false);
+
+  assert((first.ids == std::vector<std::uint32_t>{7, 7}));
+  assert((first.tokens == std::vector<std::string>{"hello", "hello"}));
+  assert_offsets(first, {{0, 5}, {6, 11}});
+  assert((first.word_ids == std::vector<std::optional<std::uint32_t>>{0, 1}));
+  assert(second.ids == first.ids);
+  assert(second.tokens == first.tokens);
+  assert(second.offsets == first.offsets);
+  assert(second.word_ids == first.word_ids);
+}
+
+void test_heap_merge_skips_stale_candidates() {
+  const auto tokenizer = load_tokenizer(
+      "tokenizers_cpp_bpe_heap_stale_candidate.json",
+      {
+          {"type", "BPE"},
+          {"vocab",
+           {
+               {"a", 0},
+               {"b", 1},
+               {"c", 2},
+               {"ab", 3},
+               {"bc", 4},
+               {"abc", 5},
+           }},
+          {"merges",
+           json::array({
+               json::array({"b", "c"}),
+               json::array({"a", "b"}),
+               json::array({"a", "bc"}),
+           })},
+      });
+
+  const auto output = tokenizer.encode("abc", false);
+  assert((output.ids == std::vector<std::uint32_t>{5}));
+  assert((output.tokens == std::vector<std::string>{"abc"}));
+  assert_offsets(output, {{0, 3}});
+}
+
 void test_merge_token_oov_rejected_on_load() {
   bool threw = false;
   try {
@@ -494,6 +564,8 @@ int main() {
   test_byte_fallback();
   test_raw_bpe_byte_fallback_newline();
   test_raw_bpe_cache_does_not_cross_instances();
+  test_bpe_cache_preserves_offsets_for_repeated_pieces();
+  test_heap_merge_skips_stale_candidates();
   test_merge_token_oov_rejected_on_load();
   test_bpe_from_files_public_api();
   test_bpe_from_files_options();

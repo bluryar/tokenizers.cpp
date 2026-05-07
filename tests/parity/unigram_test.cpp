@@ -40,6 +40,12 @@ json tokenizer_json(json model) {
   };
 }
 
+json tokenizer_json(json model, json pre_tokenizer) {
+  auto value = tokenizer_json(std::move(model));
+  value["pre_tokenizer"] = std::move(pre_tokenizer);
+  return value;
+}
+
 std::filesystem::path write_temp_tokenizer_json(
     const std::string & name,
     const json & value) {
@@ -51,6 +57,18 @@ std::filesystem::path write_temp_tokenizer_json(
 
 tokenizers_cpp::Tokenizer load_unigram(const std::string & name, json model) {
   const auto path = write_temp_tokenizer_json(name, tokenizer_json(std::move(model)));
+  const auto tokenizer = tokenizers_cpp::Tokenizer::from_file(path);
+  std::filesystem::remove(path);
+  return tokenizer;
+}
+
+tokenizers_cpp::Tokenizer load_unigram(
+    const std::string & name,
+    json model,
+    json pre_tokenizer) {
+  const auto path = write_temp_tokenizer_json(
+      name,
+      tokenizer_json(std::move(model), std::move(pre_tokenizer)));
   const auto tokenizer = tokenizers_cpp::Tokenizer::from_file(path);
   std::filesystem::remove(path);
   return tokenizer;
@@ -173,6 +191,60 @@ void test_byte_fallback() {
   check_common_vectors(unknown);
 }
 
+void test_unigram_cache_preserves_offsets_and_instances() {
+  const auto whitespace_split = json{{"type", "WhitespaceSplit"}};
+  const auto tokenizer_a = load_unigram(
+      "tokenizers_cpp_unigram_cache_a.json",
+      {
+          {"type", "Unigram"},
+          {"unk_id", 0},
+          {"vocab",
+           json::array({
+               json::array({"<unk>", -100.0}),
+               json::array({"a", 0.0}),
+               json::array({"b", 0.0}),
+               json::array({"ab", 2.0}),
+           })},
+      },
+      whitespace_split);
+  const auto tokenizer_b = load_unigram(
+      "tokenizers_cpp_unigram_cache_b.json",
+      {
+          {"type", "Unigram"},
+          {"unk_id", 0},
+          {"vocab",
+           json::array({
+               json::array({"<unk>", -100.0}),
+               json::array({"a", 0.0}),
+               json::array({"b", 0.0}),
+           })},
+      },
+      whitespace_split);
+
+  const auto a_first = tokenizer_a.encode("ab ab", false);
+  const auto b_first = tokenizer_b.encode("ab", false);
+  const auto a_second = tokenizer_a.encode("ab ab", false);
+  const auto b_second = tokenizer_b.encode("ab", false);
+
+  assert((a_first.ids == std::vector<std::uint32_t>{3, 3}));
+  assert((a_first.tokens == std::vector<std::string>{"ab", "ab"}));
+  assert((a_first.offsets == std::vector<tokenizers_cpp::Offset>{{0, 2}, {3, 5}}));
+  assert((a_first.word_ids == std::vector<std::optional<std::uint32_t>>{0, 1}));
+  assert(a_second.ids == a_first.ids);
+  assert(a_second.tokens == a_first.tokens);
+  assert(a_second.offsets == a_first.offsets);
+  assert(a_second.word_ids == a_first.word_ids);
+
+  assert((b_first.ids == std::vector<std::uint32_t>{1, 2}));
+  assert((b_first.tokens == std::vector<std::string>{"a", "b"}));
+  assert((b_first.offsets == std::vector<tokenizers_cpp::Offset>{{0, 1}, {1, 2}}));
+  assert((b_first.word_ids == std::vector<std::optional<std::uint32_t>>{0, 0}));
+  assert(b_second.ids == b_first.ids);
+  assert(b_second.tokens == b_first.tokens);
+  assert(b_second.offsets == b_first.offsets);
+  assert(b_second.word_ids == b_first.word_ids);
+}
+
 }  // namespace
 
 int main() {
@@ -180,5 +252,6 @@ int main() {
   test_unigram_from_file_fixture(data_dir);
   test_best_path_and_fused_unknown();
   test_byte_fallback();
+  test_unigram_cache_preserves_offsets_and_instances();
   return 0;
 }

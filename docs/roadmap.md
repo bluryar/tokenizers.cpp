@@ -152,6 +152,16 @@ Status: active/current
 - Keep performance work behind the tokenizer-centered public API.
 - R6 added-token matching performance hardening is frozen in
   `docs/r6-added-token-matching-performance.md`.
+- R6 token-to-id map performance hardening is frozen in
+  `docs/r6-token-id-map-performance.md`.
+- R6 BPE cache performance hardening is frozen in
+  `docs/r6-bpe-cache-performance.md`.
+- R6 BPE merge heap performance hardening is frozen in
+  `docs/r6-bpe-heap-performance.md`.
+- R6 Unigram trie/cache performance hardening is frozen in
+  `docs/r6-unigram-cache-performance.md`.
+- R6 performance measurement is recorded in
+  `docs/r6-performance-measurement.md`.
 - Added-token extraction now uses a private cached Aho-Corasick matcher for
   large non-empty added-token sets and keeps the simple scan for small sets.
 - The matcher is candidate collection only. C++ runtime logic still owns
@@ -159,3 +169,17 @@ Status: active/current
   skip, UTF-8 byte offsets, and rejected-candidate cursor behavior.
 - Optional microbenchmarks are gated by
   `TOKENIZERS_CPP_BUILD_BENCHMARKS=ON` and are not CTest assertions.
+- Encode and lookup hot paths now reuse a private persistent `token_to_id_` map
+  instead of rebuilding a full vocab map per call.
+- Deterministic BPE encode paths now use a private thread-local cache for
+  repeated normalized pieces while preserving per-input offset projection.
+- Deterministic BPE merge selection now uses a private priority queue instead
+  of repeated full pair rescans; stochastic dropout keeps the previous linear
+  scan.
+- Deterministic Unigram encode paths now use a private vocab trie plus
+  thread-local repeated-piece cache while preserving tokenizer-instance
+  separation and per-input offset projection.
+- The R6 benchmark matrix now includes real GPT-style, RoBERTa, BERT, ALBERT,
+  and Llama tokenizer JSON cases when local HF test data exists, while keeping
+  self-contained synthetic cases available for open-source clones without that
+  data.

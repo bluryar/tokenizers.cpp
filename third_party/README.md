@@ -21,6 +21,10 @@ ICU4C uses a project-owned static install generated from that source:
 `third_party/icu4c-install` is a local build artifact and remains ignored by
 git. It must not be committed.
 
+`third_party/aho_corasick/` is a small header-only dependency checked into the
+repository so CMake never fetches it from the network. It is used by the default
+added-token matcher.
+
 Current Hugging Face tokenizers source pin:
 
 - Repository: `https://github.com/huggingface/tokenizers.git`

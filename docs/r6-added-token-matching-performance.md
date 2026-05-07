@@ -56,7 +56,7 @@ R6 adds parity coverage for:
 
 ## Benchmark
 
-The optional benchmark target is:
+The focused optional benchmark target is:
 
 ```sh
 cmake -S projects/tokenizers.cpp -B projects/tokenizers.cpp/build-bench \
@@ -78,3 +78,7 @@ tokens=1024 repeats=256 legacy_ms=22297.9 trie_ms=22.1642 speedup=1006.03x
 ```
 
 The benchmark is a performance report, not a CTest assertion.
+
+R6 also includes a tokenizer-level public-API benchmark matrix in
+`tokenizers_cpp_r6_performance_benchmark`; see
+`docs/r6-performance-measurement.md`.
