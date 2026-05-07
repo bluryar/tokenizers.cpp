@@ -144,3 +144,18 @@ Status: active/current
   optional gating for parity tests that require local ignored HF test data.
 - Remaining R5 work is optional model-specific real-tokenizer consumer smoke
   once a downstream GGML/C++ project chooses concrete tokenizer JSON fixtures.
+
+## R6. Performance Hardening
+
+Status: active/current
+
+- Keep performance work behind the tokenizer-centered public API.
+- R6 added-token matching performance hardening is frozen in
+  `docs/r6-added-token-matching-performance.md`.
+- Added-token extraction now uses a private cached Aho-Corasick matcher for
+  large non-empty added-token sets and keeps the simple scan for small sets.
+- The matcher is candidate collection only. C++ runtime logic still owns
+  leftmost-longest selection, `single_word`, `lstrip`/`rstrip`, empty-token
+  skip, UTF-8 byte offsets, and rejected-candidate cursor behavior.
+- Optional microbenchmarks are gated by
+  `TOKENIZERS_CPP_BUILD_BENCHMARKS=ON` and are not CTest assertions.

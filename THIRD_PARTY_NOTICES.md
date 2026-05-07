@@ -35,3 +35,13 @@ The default build requires a project-owned static ICU install under
 
 The header is vendored so the default CMake configure path does not need
 network access.
+
+## aho_corasick.hpp
+
+- Repository: `https://github.com/cjgdev/aho_corasick`
+- Local path: `third_party/aho_corasick/aho_corasick/aho_corasick.hpp`
+- Use: private added-token multi-pattern matching optimization
+- License: MIT License
+
+The header is vendored so the default CMake configure path does not need
+network access.

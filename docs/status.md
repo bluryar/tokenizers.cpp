@@ -3,7 +3,8 @@
 ## Current Snapshot
 
 Date: 2026-05-07
-Phase: Core Inference API Translation Complete; R5 open-source readiness prep
+Phase: Core Inference API Translation Complete; R6 added-token matching
+performance hardening
 
 ## Milestone Freeze
 
@@ -24,6 +25,9 @@ R4-H2 BPE public surface review:
 
 R5 consumer readiness:
 `docs/r5-consumer-readiness.md`.
+
+R6 added-token matching performance hardening:
+`docs/r6-added-token-matching-performance.md`.
 
 Open-source release checklist:
 `docs/open-source-checklist.md`.
@@ -83,6 +87,13 @@ install prefix and remains ignored by this project's `.gitignore`.
   ignored, and top-level `LICENSE`, `NOTICE`, `THIRD_PARTY_NOTICES.md`,
   `CONTRIBUTING.md`, `SECURITY.md`, `.gitattributes`, and
   `docs/open-source-checklist.md` are present.
+- R6 performance hardening adds a private cached Aho-Corasick matcher for
+  added-token extraction when the non-empty added-token set is large enough to
+  benefit from trie matching. Small added-token sets keep the legacy scan.
+  Candidate collection is optimized, but the tokenizer still owns
+  leftmost-longest selection, `single_word`, `lstrip`/`rstrip`, empty-token
+  skip, and UTF-8 byte-offset behavior. The vendored header-only dependency is
+  recorded in `THIRD_PARTY_NOTICES.md`.
 - HF test-data-dependent parity tests are now gated by
   `TOKENIZERS_CPP_BUILD_HF_TEST_DATA_TESTS`. The default is ON only when
   `TOKENIZERS_CPP_HF_TEST_DATA_DIR` exists, so a normal open-source clone can
@@ -993,20 +1004,18 @@ Remaining gaps:
 
 ## Next Actions
 
-1. Before publishing the standalone repository, commit `third_party/tokenizers`
-   and `third_party/icu` as submodule gitlinks from inside the
-   `projects/tokenizers.cpp` repository root. Do not run root-level `ggbond`
-   submodule commands for these project-owned paths.
-2. Keep BPE work behind the accepted tokenizer-centered public surface. Re-open
+1. Keep BPE work behind the accepted tokenizer-centered public surface. Re-open
    `ADR-0004` only if a downstream C++/GGML integration needs standalone
    `models::BPE`, builder APIs, explicit cache controls, or exact stochastic
    dropout controls.
-3. Treat R5 consumer readiness as complete for generic integration. Add a
+2. Treat R5 consumer readiness as complete for generic integration. Add a
    model-specific real-tokenizer consumer smoke only when a downstream GGML/C++
    project chooses concrete tokenizer JSON fixtures.
-4. Keep any additional decoder composition follow-ups focused on real tokenizer
+3. Keep any additional decoder composition follow-ups focused on real tokenizer
    JSON demand; the R4-H1 ByteFallback/Fuse, Metaspace/Fuse, ByteLevel/Fuse,
    and no-finalize stream boundaries are now pinned.
-5. Add rare ICU offset projection fixtures only when a concrete tokenizer
+4. Add rare ICU offset projection fixtures only when a concrete tokenizer
    exposes byte-exact upstream behavior that the current grouping does not
    cover.
+5. Add future performance work only behind private implementation boundaries
+   unless a downstream C++/GGML integration re-opens the public surface.

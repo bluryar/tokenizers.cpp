@@ -7,6 +7,7 @@
 #include <future>
 #include <fstream>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <random>
 #include <stdexcept>
@@ -17,6 +18,7 @@
 #include <utility>
 
 #include <nlohmann/json.hpp>
+#include <aho_corasick/aho_corasick.hpp>
 
 namespace tokenizers_cpp {
 
@@ -283,10 +285,81 @@ struct BpeMerge {
 
 }  // namespace detail
 
+struct AddedTokenMatch {
+  std::size_t token_index = 0;
+  std::size_t start = 0;
+  std::size_t stop = 0;
+};
+
+class AddedTokenMatcher {
+ public:
+  explicit AddedTokenMatcher(const std::vector<detail::AddedToken> & added_tokens) {
+    token_indices_by_emit_.reserve(added_tokens.size());
+    for (std::size_t token_index = 0; token_index < added_tokens.size(); ++token_index) {
+      const auto & token = added_tokens[token_index];
+      if (token.content.empty()) {
+        continue;
+      }
+      trie_.insert(token.content);
+      token_indices_by_emit_.push_back(token_index);
+    }
+    use_trie_ = token_indices_by_emit_.size() >= kTrieThreshold;
+    if (use_trie_) {
+      (void)trie_.parse_text(std::string{});
+    }
+  }
+
+  bool use_trie() const {
+    return use_trie_;
+  }
+
+  std::vector<AddedTokenMatch> find_matches(std::string_view text) {
+    if (!use_trie_ || text.empty()) {
+      return {};
+    }
+
+    std::vector<AddedTokenMatch> matches;
+    for (const auto & emit : trie_.parse_text(std::string(text))) {
+      const auto emit_index = static_cast<std::size_t>(emit.get_index());
+      if (emit_index >= token_indices_by_emit_.size()) {
+        continue;
+      }
+      matches.push_back(AddedTokenMatch{
+          token_indices_by_emit_[emit_index],
+          emit.get_start(),
+          emit.get_end() + 1});
+    }
+
+    std::sort(
+        matches.begin(),
+        matches.end(),
+        [](const AddedTokenMatch & lhs, const AddedTokenMatch & rhs) {
+          if (lhs.start != rhs.start) {
+            return lhs.start < rhs.start;
+          }
+          const auto lhs_length = lhs.stop - lhs.start;
+          const auto rhs_length = rhs.stop - rhs.start;
+          if (lhs_length != rhs_length) {
+            return lhs_length > rhs_length;
+          }
+          return lhs.token_index < rhs.token_index;
+        });
+    return matches;
+  }
+
+ private:
+  static constexpr std::size_t kTrieThreshold = 8;
+
+  aho_corasick::trie trie_;
+  std::vector<std::size_t> token_indices_by_emit_;
+  bool use_trie_ = false;
+};
+
 struct Tokenizer::Impl {
   std::vector<std::string> id_to_token_;
   std::vector<bool> special_id_;
   std::vector<detail::AddedToken> added_tokens_;
+  std::shared_ptr<AddedTokenMatcher> added_token_matcher_;
   std::string model_type_;
   std::unordered_map<std::uint64_t, detail::BpeMerge> bpe_merges_;
   detail::BpeConfig bpe_;
@@ -1078,12 +1151,6 @@ std::vector<std::string> apply_decoder_steps(
   }
   return tokens;
 }
-
-struct AddedTokenMatch {
-  std::size_t token_index = 0;
-  std::size_t start = 0;
-  std::size_t stop = 0;
-};
 
 struct InputSplit {
   bool is_added_token = false;
@@ -4153,19 +4220,56 @@ std::optional<AddedTokenMatch> find_next_added_token_match(
   return best;
 }
 
+std::optional<AddedTokenMatch> find_next_added_token_match(
+    const std::vector<AddedTokenMatch> & matches,
+    std::size_t search_start,
+    std::size_t & cursor) {
+  while (cursor < matches.size() && matches[cursor].start < search_start) {
+    ++cursor;
+  }
+  if (cursor == matches.size()) {
+    return std::nullopt;
+  }
+  return matches[cursor];
+}
+
+std::shared_ptr<AddedTokenMatcher> build_added_token_matcher(
+    const std::vector<detail::AddedToken> & added_tokens) {
+  if (added_tokens.empty()) {
+    return nullptr;
+  }
+  auto matcher = std::make_shared<AddedTokenMatcher>(added_tokens);
+  if (!matcher->use_trie()) {
+    return nullptr;
+  }
+  return matcher;
+}
+
+void rebuild_added_token_matcher(
+    const std::vector<detail::AddedToken> & added_tokens,
+    std::shared_ptr<AddedTokenMatcher> & matcher) {
+  matcher = build_added_token_matcher(added_tokens);
+}
+
 std::vector<InputSplit> split_on_added_tokens(
     const std::string & text,
-    const std::vector<detail::AddedToken> & added_tokens) {
+    const std::vector<detail::AddedToken> & added_tokens,
+    AddedTokenMatcher * matcher) {
   if (added_tokens.empty()) {
     return {InputSplit{false, 0, text, Offset{0, text.size()}}};
   }
 
+  const auto matcher_matches = matcher ? matcher->find_matches(text) : std::vector<AddedTokenMatch>{};
+
   std::vector<InputSplit> splits;
   std::size_t start_offset = 0;
   std::size_t search_start = 0;
+  std::size_t matcher_cursor = 0;
 
   while (search_start < text.size()) {
-    const auto match = find_next_added_token_match(added_tokens, text, search_start);
+    const auto match = matcher
+        ? find_next_added_token_match(matcher_matches, search_start, matcher_cursor)
+        : find_next_added_token_match(added_tokens, text, search_start);
     if (!match) {
       break;
     }
@@ -6230,6 +6334,9 @@ Tokenizer Tokenizer::from_file(const std::filesystem::path & path) {
           added_token.special);
       tokenizer.impl_->added_tokens_.push_back(std::move(added_token));
     }
+    rebuild_added_token_matcher(
+        tokenizer.impl_->added_tokens_,
+        tokenizer.impl_->added_token_matcher_);
   }
 
   return tokenizer;
@@ -6326,6 +6433,9 @@ std::size_t Tokenizer::add_tokens(const std::vector<AddedToken> & tokens) {
     impl_->added_tokens_.push_back(std::move(added_token));
     ++added;
   }
+  if (added > 0) {
+    rebuild_added_token_matcher(impl_->added_tokens_, impl_->added_token_matcher_);
+  }
   return added;
 }
 
@@ -6378,7 +6488,8 @@ Encoding Tokenizer::encode_text(
     bool apply_padding_config) const {
   Encoding encoding;
   const auto token_to_id_map = build_token_to_id(impl_->id_to_token_);
-  const auto splits = split_on_added_tokens(text, impl_->added_tokens_);
+  const auto splits =
+      split_on_added_tokens(text, impl_->added_tokens_, impl_->added_token_matcher_.get());
 
   std::uint32_t word_id = 0;
   for (const auto & split : splits) {
@@ -6465,7 +6576,10 @@ Encoding Tokenizer::encode_pre_tokenized_words(
       throw std::runtime_error("pre-tokenized input has too many words");
     }
     const auto word_id = static_cast<std::uint32_t>(index);
-    const auto splits = split_on_added_tokens(pre_tokenized[index], impl_->added_tokens_);
+    const auto splits = split_on_added_tokens(
+        pre_tokenized[index],
+        impl_->added_tokens_,
+        impl_->added_token_matcher_.get());
     for (const auto & split : splits) {
       encode_input_split(
           encoding,

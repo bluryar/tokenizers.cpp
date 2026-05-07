@@ -198,6 +198,78 @@ void test_leftmost_longest_overlap_matching() {
   assert((encoded.offsets == offsets({{0, 1}, {2, 3}, {3, 6}, {7, 11}, {11, 14}})));
 }
 
+void test_trie_leftmost_longest_mask_overlap_matching() {
+  const std::string vocab =
+      R"json({"[UNK]": 0, "I": 1, "use": 2, "now": 3})json";
+  const auto tokenizer = load_temp_tokenizer(
+      "tokenizers_cpp_added_tokens_trie_mask_overlap.json",
+      wordlevel_tokenizer_json(vocab, R"json([
+        {"id": 4, "content": "", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+        {"id": 5, "content": "<m>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+        {"id": 6, "content": "<mask>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+        {"id": 7, "content": "<mask>ing", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+        {"id": 8, "content": "<a>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+        {"id": 9, "content": "<b>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+        {"id": 10, "content": "<c>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+        {"id": 11, "content": "<d>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+        {"id": 12, "content": "<e>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+        {"id": 13, "content": "<f>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true}
+      ])json"));
+
+  const auto encoded = tokenizer.encode("I use <mask>ing now", false);
+  assert((encoded.ids == std::vector<std::uint32_t>{1, 2, 6, 3}));
+  assert((encoded.tokens == std::vector<std::string>{"I", "use", "<mask>ing", "now"}));
+  assert((encoded.offsets == offsets({{0, 1}, {2, 5}, {6, 15}, {16, 19}})));
+  assert(!tokenizer.token_to_id("").has_value());
+}
+
+void test_trie_single_word_rejection_keeps_cursor_behavior() {
+  const std::string vocab = R"json({"[UNK]": 0, "dancing": 1})json";
+  const auto tokenizer = load_temp_tokenizer(
+      "tokenizers_cpp_added_tokens_trie_single_word_cursor.json",
+      wordlevel_tokenizer_json(vocab, R"json([
+        {"id": 2, "content": "ing", "single_word": true, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+        {"id": 3, "content": "<a>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+        {"id": 4, "content": "<b>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+        {"id": 5, "content": "<c>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+        {"id": 6, "content": "<d>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+        {"id": 7, "content": "<e>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+        {"id": 8, "content": "<f>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+        {"id": 9, "content": "<g>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true}
+      ])json"));
+
+  const auto encoded = tokenizer.encode("dancing ing", false);
+  assert((encoded.ids == std::vector<std::uint32_t>{1, 2}));
+  assert((encoded.tokens == std::vector<std::string>{"dancing", "ing"}));
+  assert((encoded.offsets == offsets({{0, 7}, {8, 11}})));
+}
+
+void test_trie_strip_and_utf8_offsets() {
+  const std::string vocab =
+      R"json({"[UNK]": 0, "h\u00e9": 1, "\u4e16\u754c": 2})json";
+  const auto tokenizer = load_temp_tokenizer(
+      "tokenizers_cpp_added_tokens_trie_strip_utf8.json",
+      wordlevel_tokenizer_json(vocab, R"json([
+        {"id": 3, "content": "<tag>", "single_word": false, "lstrip": true, "rstrip": true, "normalized": false, "special": true},
+        {"id": 4, "content": "<a>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+        {"id": 5, "content": "<b>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+        {"id": 6, "content": "<c>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+        {"id": 7, "content": "<d>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+        {"id": 8, "content": "<e>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+        {"id": 9, "content": "<f>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+        {"id": 10, "content": "<g>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true}
+      ])json"));
+
+  const auto encoded =
+      tokenizer.encode("h\xC3\xA9 <tag> \xE4\xB8\x96\xE7\x95\x8C", false);
+  assert((encoded.ids == std::vector<std::uint32_t>{1, 3, 2}));
+  assert((encoded.tokens == std::vector<std::string>{
+                                      "h\xC3\xA9",
+                                      " <tag> ",
+                                      "\xE4\xB8\x96\xE7\x95\x8C"}));
+  assert((encoded.offsets == offsets({{0, 3}, {3, 10}, {10, 16}})));
+}
+
 void test_added_tokens_validation() {
   expect_load_fails(
       "tokenizers_cpp_added_tokens_not_array.json",
@@ -223,6 +295,9 @@ int main() {
   test_lstrip_and_rstrip_matching();
   test_single_word_matching();
   test_leftmost_longest_overlap_matching();
+  test_trie_leftmost_longest_mask_overlap_matching();
+  test_trie_single_word_rejection_keeps_cursor_behavior();
+  test_trie_strip_and_utf8_offsets();
   test_added_tokens_validation();
   return 0;
 }

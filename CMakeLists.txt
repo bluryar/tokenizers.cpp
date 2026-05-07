@@ -3,6 +3,7 @@ project(tokenizers_cpp VERSION 0.1.0 LANGUAGES CXX)
 
 option(TOKENIZERS_CPP_BUILD_TESTS "Build tokenizers.cpp tests" ON)
 option(TOKENIZERS_CPP_BUILD_EXAMPLES "Build tokenizers.cpp examples" ${PROJECT_IS_TOP_LEVEL})
+option(TOKENIZERS_CPP_BUILD_BENCHMARKS "Build tokenizers.cpp microbenchmarks" OFF)
 option(TOKENIZERS_CPP_FETCH_DEPS "Fetch missing third-party dependencies" ON)
 option(TOKENIZERS_CPP_ICU_VENDOR "Require ICU from a project-owned vendored install" ON)
 option(TOKENIZERS_CPP_ICU_SHARED "Allow ICU shared libraries for development builds" OFF)
@@ -98,6 +99,8 @@ target_include_directories(tokenizers_cpp
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+  PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party/aho_corasick>
 )
 
 target_link_libraries(tokenizers_cpp
@@ -220,6 +223,16 @@ if(TOKENIZERS_CPP_BUILD_EXAMPLES)
   target_link_libraries(tokenizers_cpp_example_stream_decode
     PRIVATE
       tokenizers_cpp::tokenizers_cpp
+  )
+endif()
+
+if(TOKENIZERS_CPP_BUILD_BENCHMARKS)
+  add_executable(tokenizers_cpp_added_token_matcher_benchmark
+    benchmarks/added_token_matcher_benchmark.cpp
+  )
+  target_include_directories(tokenizers_cpp_added_token_matcher_benchmark
+    PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/third_party/aho_corasick"
   )
 endif()
 
