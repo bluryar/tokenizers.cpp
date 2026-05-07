@@ -1,0 +1,43 @@
+if(NOT DEFINED TOKENIZERS_CPP_AUDIT_BINARY)
+  message(FATAL_ERROR "TOKENIZERS_CPP_AUDIT_BINARY is required")
+endif()
+
+find_program(TOKENIZERS_CPP_LDD_EXECUTABLE ldd)
+if(NOT TOKENIZERS_CPP_LDD_EXECUTABLE)
+  message(FATAL_ERROR "ldd is required for the shared ICU dependency audit")
+endif()
+
+execute_process(
+  COMMAND "${TOKENIZERS_CPP_LDD_EXECUTABLE}" "${TOKENIZERS_CPP_AUDIT_BINARY}"
+  OUTPUT_VARIABLE TOKENIZERS_CPP_LDD_OUTPUT
+  ERROR_VARIABLE TOKENIZERS_CPP_LDD_ERROR
+  RESULT_VARIABLE TOKENIZERS_CPP_LDD_RESULT
+)
+
+if(NOT TOKENIZERS_CPP_LDD_RESULT EQUAL 0)
+  message(FATAL_ERROR
+    "ldd failed for ${TOKENIZERS_CPP_AUDIT_BINARY}: "
+    "${TOKENIZERS_CPP_LDD_ERROR}"
+  )
+endif()
+
+set(
+  TOKENIZERS_CPP_LDD_COMBINED
+  "${TOKENIZERS_CPP_LDD_OUTPUT}\n${TOKENIZERS_CPP_LDD_ERROR}"
+)
+
+if(TOKENIZERS_CPP_LDD_COMBINED MATCHES "(^|[\n\r\t ])libicu[^\n\r]*(\\.so|\\.dylib|\\.dll)")
+  message(FATAL_ERROR
+    "shared ICU dependency detected for ${TOKENIZERS_CPP_AUDIT_BINARY}:\n"
+    "${TOKENIZERS_CPP_LDD_COMBINED}"
+  )
+endif()
+
+if(TOKENIZERS_CPP_LDD_COMBINED MATCHES "not found")
+  message(FATAL_ERROR
+    "unresolved runtime dependency detected for ${TOKENIZERS_CPP_AUDIT_BINARY}:\n"
+    "${TOKENIZERS_CPP_LDD_COMBINED}"
+  )
+endif()
+
+message(STATUS "No shared ICU dependency detected for ${TOKENIZERS_CPP_AUDIT_BINARY}")

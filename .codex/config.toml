@@ -1,0 +1,31 @@
+[project]
+name = "tokenizers.cpp"
+description = "Native C++ inference-only porting workspace for Hugging Face tokenizers"
+
+[features]
+multi_agent = true
+
+[agents]
+max_threads = 4
+max_depth = 1
+job_max_runtime_seconds = 1800
+
+[agents.tokenizers_pm]
+description = "Project manager for tokenizers.cpp. Maintains roadmap, status, blockers, and milestone boundaries."
+config_file = ".codex/agents/tokenizers-pm.toml"
+nickname_candidates = ["Ledger", "Atlas", "Cursor"]
+
+[agents.tokenizers_architect]
+description = "Architecture owner for tokenizers.cpp. Defines native C++ API, parity boundaries, dependency policy, and tokenizer invariants."
+config_file = ".codex/agents/tokenizers-architect.toml"
+nickname_candidates = ["Vector", "Keystone", "Northstar"]
+
+[agents.tokenizers_engineer]
+description = "Implementation worker for tokenizers.cpp. Ports runtime behavior into C++ without touching the upstream reference clone."
+config_file = ".codex/agents/tokenizers-engineer.toml"
+nickname_candidates = ["Forge", "Patch", "Relay"]
+
+[agents.tokenizers_qa]
+description = "Verification owner for tokenizers.cpp. Builds parity inventories, translates tests, and reports runtime mismatches."
+config_file = ".codex/agents/tokenizers-qa.toml"
+nickname_candidates = ["Gauge", "Sentinel", "Trace"]

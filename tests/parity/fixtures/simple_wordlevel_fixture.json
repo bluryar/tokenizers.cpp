@@ -1,0 +1,90 @@
+{
+  "source": "upstream tokenizers Rust crate via scripts/dev/generate_parity_fixtures.py",
+  "tokenizer_json": "simple_wordlevel_tokenizer.json",
+  "cases": [
+    {
+      "name": "hello_world",
+      "text": "hello world",
+      "add_special_tokens": true,
+      "encoding": {
+        "ids": [
+          2,
+          3
+        ],
+        "tokens": [
+          "hello",
+          "world"
+        ],
+        "offsets": [
+          {
+            "start": 0,
+            "end": 5
+          },
+          {
+            "start": 6,
+            "end": 11
+          }
+        ],
+        "type_ids": [
+          0,
+          0
+        ],
+        "word_ids": [
+          0,
+          1
+        ],
+        "special_tokens_mask": [
+          0,
+          0
+        ],
+        "attention_mask": [
+          1,
+          1
+        ]
+      },
+      "decode": "hello world"
+    },
+    {
+      "name": "leading_and_repeated_space",
+      "text": "  hello   world",
+      "add_special_tokens": true,
+      "encoding": {
+        "ids": [
+          2,
+          3
+        ],
+        "tokens": [
+          "hello",
+          "world"
+        ],
+        "offsets": [
+          {
+            "start": 2,
+            "end": 7
+          },
+          {
+            "start": 10,
+            "end": 15
+          }
+        ],
+        "type_ids": [
+          0,
+          0
+        ],
+        "word_ids": [
+          0,
+          1
+        ],
+        "special_tokens_mask": [
+          0,
+          0
+        ],
+        "attention_mask": [
+          1,
+          1
+        ]
+      },
+      "decode": "hello world"
+    }
+  ]
+}

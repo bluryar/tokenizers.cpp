@@ -1,0 +1,44 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(Threads)
+
+set(_tokenizers_cpp_icu_lib_dir
+  "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_LIBDIR@/tokenizers_cpp/icu"
+)
+set(_tokenizers_cpp_icu_include_dir
+  "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_INCLUDEDIR@/tokenizers_cpp/icu"
+)
+
+function(_tokenizers_cpp_define_icu_target raw_target alias_target library_name)
+  if(NOT TARGET "${raw_target}")
+    add_library("${raw_target}" UNKNOWN IMPORTED)
+    set_target_properties("${raw_target}" PROPERTIES
+      IMPORTED_LOCATION "${_tokenizers_cpp_icu_lib_dir}/${library_name}"
+      INTERFACE_INCLUDE_DIRECTORIES "${_tokenizers_cpp_icu_include_dir}"
+    )
+  endif()
+  if(NOT TARGET "${alias_target}")
+    add_library("${alias_target}" ALIAS "${raw_target}")
+  endif()
+endfunction()
+
+_tokenizers_cpp_define_icu_target(
+  tokenizers_cpp_icu4c_uc
+  tokenizers_cpp_icu4c::uc
+  "@TOKENIZERS_CPP_ICU_UC_INSTALL_NAME@"
+)
+_tokenizers_cpp_define_icu_target(
+  tokenizers_cpp_icu4c_i18n
+  tokenizers_cpp_icu4c::i18n
+  "@TOKENIZERS_CPP_ICU_I18N_INSTALL_NAME@"
+)
+_tokenizers_cpp_define_icu_target(
+  tokenizers_cpp_icu4c_data
+  tokenizers_cpp_icu4c::data
+  "@TOKENIZERS_CPP_ICU_DATA_INSTALL_NAME@"
+)
+
+include("${CMAKE_CURRENT_LIST_DIR}/tokenizers_cppTargets.cmake")
+
+check_required_components(tokenizers_cpp)

@@ -1,0 +1,5 @@
+build/
+build-*/
+__pycache__/
+hf-internal-testing/
+third_party/icu4c-install/

@@ -1,0 +1,13 @@
+tokenizers.cpp
+Copyright 2026 tokenizers.cpp contributors
+
+This product includes a native C++ inference-only implementation inspired by
+and tested against Hugging Face tokenizers, which is licensed under the Apache
+License 2.0.
+
+This product vendors nlohmann/json as a single header. nlohmann/json is
+licensed under the MIT License.
+
+This product builds against a project-owned ICU4C checkout. ICU is distributed
+under the Unicode License. The generated ICU static install prefix is a local
+build artifact and is not committed to this repository.
