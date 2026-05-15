@@ -35,11 +35,13 @@ path, and the previous self-contained builtin backend is no longer built.
   build flow using ICU's `runConfigureICU`, `--enable-static`,
   `--disable-shared`, and `--with-data-packaging=archive`.
 - Current local ICU4C source/install baseline:
-  - source: `third_party/icu`, tag `release-77-1`
-  - commit: `457157a92aa053e632cc7fcfd0e12f8a943b2d11`
+  - source archive: `third_party/icu4c-78.3/icu4c-78.3-sources.tgz`
+  - data archive: `third_party/icu4c-78.3/icu4c-78.3-data.zip`
+  - checksums: `third_party/icu4c-78.3/SHASUM512.txt`
+  - upstream tag: `release-78.3`
   - install prefix: `third_party/icu4c-install`
   - libraries: static `libicu*.a`
-  - data archive: `share/icu/77.1/icudt77l.dat`
+  - data archive: `share/icu/78.3/icudt78l.dat`
 - The ICU build helper prepends the `uv`-managed Python executable directory to
   `PATH` before running ICU configure so data rules can be generated without
   relying on system Python.
@@ -68,9 +70,10 @@ against the Unicode backend smoke binary and fails if `ldd` reports a shared
   the default build, and serialized `Replace` regex normalizers reuse the same
   backend regex match boundary while keeping replacement offset projection in
   the normalizer layer.
-- ICU data packaging is now present in the local vendored install. Future
-  packaging work still needs to decide whether the source/install are committed
-  directly, fetched by a bootstrap step, or mirrored in a project artifact.
+- ICU source and data release inputs are vendored as upstream release archives
+  rather than as a git submodule. `scripts/dev/build_vendored_icu4c.sh` extracts
+  them into `build/` and installs the static ICU4C prefix into
+  `third_party/icu4c-install`.
 - ICU normalization offset projection currently returns conservative spans for
   normalized output. ICU lowercase uses `CaseMap` edits for source span
   projection.

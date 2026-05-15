@@ -24,6 +24,9 @@ these rules:
 
 - ICU4C must be vendored or otherwise pinned to an exact project-controlled
   source version.
+- The accepted vendored form is an upstream ICU release source archive plus the
+  matching release data archive, not a live ICU git submodule. Build scripts may
+  extract those archives into `build/` before compiling the static install.
 - The production inference path must support a static build that does not
   require system `libicu*.so`, `.dylib`, or `.dll` files at runtime.
 - `find_package(ICU)` or similar discovery of system ICU is not allowed for the
