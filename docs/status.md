@@ -65,16 +65,19 @@ internal model-builder parity remain outside the accepted core milestone.
   `hf-internal-testing/tokenizers-test-data`
 - Crate test-data link:
   `third_party/tokenizers/tokenizers/data` -> test data source
-- ICU4C source:
-  `third_party/icu`, tag `release-77-1`,
-  commit `457157a92aa053e632cc7fcfd0e12f8a943b2d11`
+- ICU4C source/data:
+  `third_party/icu4c-78.3/icu4c-78.3-sources.tgz`,
+  `third_party/icu4c-78.3/icu4c-78.3-data.zip`,
+  upstream tag `release-78.3`, checksums in
+  `third_party/icu4c-78.3/SHASUM512.txt`
 - ICU4C static install:
-  `third_party/icu4c-install`, ICU `77.1`, Unicode `16.0`, data archive
-  `share/icu/77.1/icudt77l.dat`
+  `third_party/icu4c-install`, ICU `78.3`, data archive
+  `share/icu/78.3/icudt78l.dat`
 
-`third_party/tokenizers` and `third_party/icu` are prepared as git submodules
-for standalone publication. `third_party/icu4c-install` is a generated static
-install prefix and remains ignored by this project's `.gitignore`.
+`third_party/tokenizers` is prepared as a git submodule for standalone
+publication. ICU4C is vendored as upstream release archives rather than as a
+submodule. `third_party/icu4c-install` is a generated static install prefix and
+remains ignored by this project's `.gitignore`.
 
 ## Current Surface
 
@@ -100,8 +103,8 @@ install prefix and remains ignored by this project's `.gitignore`.
   `tokenizers_cpp_no_shared_icu_audit`, which fails if `ldd` reports shared
   `libicu*.so` runtime linkage or an unresolved runtime dependency.
 - Open-source release hygiene is initialized: `.gitmodules` records the public
-  Hugging Face tokenizers and unicode-org/icu upstream URLs, `.gitignore` no
-  longer hides those submodule paths, generated ICU install output remains
+  Hugging Face tokenizers upstream URL, ICU release archives are vendored under
+  `third_party/icu4c-78.3`, generated ICU install output remains
   ignored, and top-level `LICENSE`, `NOTICE`, `THIRD_PARTY_NOTICES.md`,
   `CONTRIBUTING.md`, `SECURITY.md`, `.gitattributes`, and
   `docs/open-source-checklist.md` are present.

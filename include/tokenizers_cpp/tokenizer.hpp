@@ -6,6 +6,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -88,6 +89,7 @@ public:
   Tokenizer & operator=(Tokenizer && other) noexcept;
 
   static Tokenizer from_file(const std::filesystem::path & path);
+  static Tokenizer from_json(std::string_view tokenizer_json);
   static Tokenizer from_bpe_files(
       const std::filesystem::path & vocab_path,
       const std::filesystem::path & merges_path,

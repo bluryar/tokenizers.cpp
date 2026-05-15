@@ -6,7 +6,8 @@ repository.
 ## Repository Shape
 
 - [ ] `third_party/tokenizers` is committed as a git submodule gitlink.
-- [ ] `third_party/icu` is committed as a git submodule gitlink.
+- [ ] `third_party/icu4c-78.3` contains the pinned ICU source/data release
+  archives and checksum file.
 - [ ] `.gitmodules` contains only public upstream URLs.
 - [ ] `third_party/icu4c-install` is not committed.
 - [ ] build directories such as `build/` and `build-*` are not committed.
@@ -28,7 +29,7 @@ Expected shape:
 
 - `ggbond/.gitmodules` owns `projects/tokenizers.cpp`.
 - `projects/tokenizers.cpp/.gitmodules` owns nested upstream references:
-  `third_party/tokenizers` and `third_party/icu`.
+  `third_party/tokenizers`.
 - Consumers initialize recursively:
 
 ```sh

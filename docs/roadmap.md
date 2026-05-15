@@ -139,7 +139,7 @@ Status: active/current
   self-contained encode/decode, batch/padding, and stream decode examples,
   `docs/integration.md`, and a project `README.md`.
 - R5-C4 initialized open-source readiness: standalone repository submodule
-  metadata for `third_party/tokenizers` and `third_party/icu`, release
+  metadata for `third_party/tokenizers`, vendored ICU release archives, release
   hygiene files, third-party notices, an open-source release checklist, and
   optional gating for parity tests that require local ignored HF test data.
 - Remaining R5 work is optional model-specific real-tokenizer consumer smoke

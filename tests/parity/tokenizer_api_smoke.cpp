@@ -10,29 +10,33 @@
 
 int main() {
   const auto path = std::filesystem::temp_directory_path() / "tokenizers_cpp_smoke_tokenizer.json";
+  const std::string tokenizer_json = R"json({
+    "version": "1.0",
+    "model": {
+      "type": "WordLevel",
+      "unk_token": "[UNK]",
+      "vocab": {
+        "[UNK]": 0,
+        "[CLS]": 1,
+        "hello": 2,
+        "world": 3,
+        "héllo": 4,
+        "世界": 5
+      }
+    },
+    "added_tokens": [
+      {"id": 1, "content": "[CLS]", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true}
+    ]
+  })json";
   {
     std::ofstream out(path);
-    out << R"json({
-      "version": "1.0",
-      "model": {
-        "type": "WordLevel",
-        "unk_token": "[UNK]",
-        "vocab": {
-          "[UNK]": 0,
-          "[CLS]": 1,
-          "hello": 2,
-          "world": 3,
-          "héllo": 4,
-          "世界": 5
-        }
-      },
-      "added_tokens": [
-        {"id": 1, "content": "[CLS]", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true}
-      ]
-    })json";
+    out << tokenizer_json;
   }
 
   const auto tokenizer = tokenizers_cpp::Tokenizer::from_file(path);
+  const auto memory_tokenizer = tokenizers_cpp::Tokenizer::from_json(tokenizer_json);
+  assert(memory_tokenizer.get_vocab_size() == tokenizer.get_vocab_size());
+  assert((memory_tokenizer.encode("hello world").ids == tokenizer.encode("hello world").ids));
   assert(tokenizer.get_vocab_size() == 6);
   assert(tokenizer.token_to_id("hello").value() == 2);
   assert(tokenizer.id_to_token(3).value() == "world");

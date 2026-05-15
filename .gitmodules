@@ -2,6 +2,3 @@
 	path = third_party/tokenizers
 	url = https://github.com/huggingface/tokenizers.git
 
-[submodule "third_party/icu"]
-	path = third_party/icu
-	url = https://github.com/unicode-org/icu.git

@@ -8,15 +8,21 @@ network access, trainers, HTTP/from-pretrained loading, or wrapper bindings.
 
 ## Repository Setup
 
-This repository expects upstream references as git submodules:
+This repository expects the Hugging Face Rust tokenizer reference as a git
+submodule:
 
 ```sh
 git submodule update --init --recursive
 ```
 
 `third_party/tokenizers` is the read-only Hugging Face Rust reference used for
-development parity. `third_party/icu` is the pinned ICU4C source checkout used
-to produce a static, project-owned ICU install.
+development parity.
+
+ICU4C is vendored as pinned upstream release archives, not as a submodule:
+
+- `third_party/icu4c-78.3/icu4c-78.3-sources.tgz`
+- `third_party/icu4c-78.3/icu4c-78.3-data.zip`
+- `third_party/icu4c-78.3/SHASUM512.txt`
 
 The generated ICU install prefix is intentionally not committed:
 
@@ -24,8 +30,9 @@ The generated ICU install prefix is intentionally not committed:
 scripts/dev/build_vendored_icu4c.sh
 ```
 
-That script installs ICU under `third_party/icu4c-install`, which is the default
-`TOKENIZERS_CPP_ICU_ROOT`.
+That script verifies the release inputs exist, extracts the source archive under
+`build/`, and installs ICU under `third_party/icu4c-install`, which is the
+default `TOKENIZERS_CPP_ICU_ROOT`.
 
 ## Build
 

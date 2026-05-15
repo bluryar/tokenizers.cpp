@@ -14,6 +14,7 @@
 #include <optional>
 #include <queue>
 #include <random>
+#include <sstream>
 #include <stdexcept>
 #include <string_view>
 #include <thread>
@@ -6787,13 +6788,25 @@ std::optional<std::string> DecodeStream::step(std::uint32_t id) {
 }
 
 Tokenizer Tokenizer::from_file(const std::filesystem::path & path) {
-  std::ifstream input(path);
+  std::ifstream input(path, std::ios::binary);
   if (!input) {
     throw std::runtime_error("failed to open tokenizer file: " + path.string());
   }
+  std::ostringstream buffer;
+  buffer << input.rdbuf();
+  if (!input.good() && !input.eof()) {
+    throw std::runtime_error("failed to read tokenizer file: " + path.string());
+  }
+  return Tokenizer::from_json(buffer.str());
+}
 
+Tokenizer Tokenizer::from_json(std::string_view tokenizer_json) {
   json root;
-  input >> root;
+  try {
+    root = json::parse(tokenizer_json.begin(), tokenizer_json.end());
+  } catch (const json::exception & e) {
+    throw std::runtime_error(std::string("failed to parse tokenizer JSON: ") + e.what());
+  }
   if (!root.is_object()) {
     throw std::runtime_error("tokenizer JSON root must be an object");
   }
