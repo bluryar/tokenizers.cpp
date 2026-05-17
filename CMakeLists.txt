@@ -110,6 +110,12 @@ target_link_libraries(tokenizers_cpp
     tokenizers_cpp_icu4c::uc
     tokenizers_cpp_icu4c::data
 )
+if(WIN32)
+  target_link_libraries(tokenizers_cpp
+    PRIVATE
+      advapi32
+  )
+endif()
 target_compile_definitions(tokenizers_cpp
   PRIVATE
     U_STATIC_IMPLEMENTATION

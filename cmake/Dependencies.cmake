@@ -35,19 +35,19 @@ if(NOT EXISTS "${_tokenizers_cpp_icu_include}/unicode/utypes.h")
 endif()
 
 find_library(TOKENIZERS_CPP_ICU_UC_LIBRARY
-  NAMES icuuc libicuuc
+  NAMES sicuuc icuuc libicuuc
   PATHS "${_tokenizers_cpp_icu_lib}"
   NO_DEFAULT_PATH
   REQUIRED
 )
 find_library(TOKENIZERS_CPP_ICU_I18N_LIBRARY
-  NAMES icui18n libicui18n
+  NAMES sicuin icui18n libicui18n icuin
   PATHS "${_tokenizers_cpp_icu_lib}"
   NO_DEFAULT_PATH
   REQUIRED
 )
 find_library(TOKENIZERS_CPP_ICU_DATA_LIBRARY
-  NAMES icudata libicudata
+  NAMES sicudt icudata libicudata icudt
   PATHS "${_tokenizers_cpp_icu_lib}"
   NO_DEFAULT_PATH
   REQUIRED
