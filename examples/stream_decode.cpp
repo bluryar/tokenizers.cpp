@@ -53,7 +53,8 @@ int main() {
 
   auto stream = tokenizer.decode_stream(false);
   assert(!stream.has_pending());
-  assert(!stream.step(1).has_value());
+  const auto pending = stream.step(1);
+  assert(!pending.has_value());
   assert(stream.has_pending());
 
   const auto first = stream.step(2);
